@@ -409,6 +409,41 @@ class CurrencyTableItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+class ValidatedLoginLineEdit(QLineEdit):
+    """
+    Поле ввода с валидацией для окна логина.
+    Разрешает только определенные символы.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.controller = TheaterController()
+
+    def keyPressEvent(self, event):
+        """Обработка нажатия клавиш с валидацией."""
+        # Сохраняем текущий текст и позицию курсора
+        old_text = self.text()
+        cursor_pos = self.cursorPosition()
+
+        # Вызываем стандартную обработку нажатия клавиш
+        super().keyPressEvent(event)
+
+        # Проверяем валидность нового текста
+        new_text = self.text()
+
+        # Если текст пустой, разрешаем его
+        if not new_text:
+            return
+
+        # Используем функцию валидации
+        if self.controller.is_valid_text_input(new_text):
+            return
+
+        # Если текст не валиден, восстанавливаем старый текст
+        self.setText(old_text)
+        self.setCursorPosition(cursor_pos)
+
+
 class ValidatedLineEdit(QLineEdit):
     """
     Поле ввода с валидацией текста.

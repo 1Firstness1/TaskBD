@@ -10,43 +10,8 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel, Q
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont, QIntValidator
 
-from controller import TheaterController, NumericTableItem, RankTableItem, CurrencyTableItem, ValidatedLineEdit
+from controller import TheaterController, NumericTableItem, RankTableItem, CurrencyTableItem, ValidatedLineEdit, ValidatedLoginLineEdit
 from logger import Logger
-
-
-class ValidatedLoginLineEdit(QLineEdit):
-    """
-    Поле ввода с валидацией для окна логина.
-    Разрешает только определенные символы.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.controller = TheaterController()
-
-    def keyPressEvent(self, event):
-        """Обработка нажатия клавиш с валидацией."""
-        # Сохраняем текущий текст и позицию курсора
-        old_text = self.text()
-        cursor_pos = self.cursorPosition()
-
-        # Вызываем стандартную обработку нажатия клавиш
-        super().keyPressEvent(event)
-
-        # Проверяем валидность нового текста
-        new_text = self.text()
-
-        # Если текст пустой, разрешаем его
-        if not new_text:
-            return
-
-        # Используем функцию валидации
-        if self.controller.is_valid_text_input(new_text):
-            return
-
-        # Если текст не валиден, восстанавливаем старый текст
-        self.setText(old_text)
-        self.setCursorPosition(cursor_pos)
 
 
 class LoginDialog(QDialog):
