@@ -7,7 +7,7 @@ import re
 from data import DatabaseManager, ActorRank
 from logger import Logger
 
-
+ 
 class TheaterController:
     """
     Основной контроллер театра, отвечающий за бизнес-логику приложения.
