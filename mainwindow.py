@@ -13,6 +13,7 @@ from logger import Logger
 from login_d import LoginDialog
 from new_performance_d import NewPerformanceDialog
 from performance_d import PerformanceHistoryDialog, PerformanceDetailsDialog
+from plot_d import PlotManagementDialog
 from actor_d import ActorsManagementDialog
 
 
@@ -82,8 +83,9 @@ class MainWindow(QMainWindow):
         <p><b>2. Обновить схему</b> - обновляйте текущую схему в базе на новую</p>
         <p><b>3. Новая постановка</b> - организуйте спектакль, выбрав сюжет и актеров</p>
         <p><b>4. Постановки</b> - просмотрите результаты прошлых спектаклей</p>
-        <p><b>5. Актёры</b> - добавляйте и удаляйте актеров</p>
-        <p><b>6. Пропустить год</b> - продайте права на постановку и получите дополнительные средства</p>
+        <p><b>5. Сюжеты</b> - добавляйте и удаляйте сюжеты</p>
+        <p><b>6. Актёры</b> - добавляйте и удаляйте актеров</p>
+        <p><b>7. Пропустить год</b> - продайте права на постановку и получите дополнительные средства</p>
         """
         instruction_label = QLabel(instruction_text)
         instruction_label.setWordWrap(True)
@@ -140,6 +142,11 @@ class MainWindow(QMainWindow):
         self.history_btn = QPushButton("Постановки")
         self.history_btn.clicked.connect(self.show_history)
         buttons_layout.addWidget(self.history_btn)
+
+        # Кнопка управления сюжетами
+        self.plots_btn = QPushButton("Сюжеты")
+        self.plots_btn.clicked.connect(self.manage_plots)
+        buttons_layout.addWidget(self.plots_btn)
 
         # Кнопка управления актерами
         self.actors_btn = QPushButton("Актеры")
@@ -314,14 +321,20 @@ class MainWindow(QMainWindow):
         """Обновление информации о текущем годе и капитале в интерфейсе."""
         try:
             game_data = self.controller.get_game_state()
-            if game_data:
+
+            if game_data and 'current_year' in game_data and 'capital' in game_data:
                 self.year_label.setText(f"Текущий год: {game_data['current_year']}")
                 # Форматирование числа с разделителями тысяч
                 self.capital_label.setText(f"Капитал: {game_data['capital']:,} ₽".replace(',', ' '))
+            else:
+                # Если данных нет, пробуем инициализировать их
+                self.year_label.setText("Текущий год: -")
+                self.capital_label.setText("Капитал: -")
+
         except Exception as e:
             self.logger.error(f"Ошибка при обновлении информации: {str(e)}")
-            self.year_label.setText("Текущий год: —")
-            self.capital_label.setText("Капитал: —")
+            self.year_label.setText("Текущий год: -")
+            self.capital_label.setText("Капитал: -")
 
     def reset_database(self):
         """Сброс данных базы данных к начальному состоянию."""
@@ -387,6 +400,12 @@ class MainWindow(QMainWindow):
 
         dialog = PerformanceDetailsDialog(performance, actors, self)
         dialog.exec()
+
+    def manage_plots(self):
+        """Открытие диалога управления сюжетами."""
+        dialog = PlotManagementDialog(self.controller, self)
+        if dialog.exec():
+            self.update_game_info()
 
     def manage_actors(self):
         """Открытие диалога управления актерами."""

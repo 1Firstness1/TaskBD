@@ -61,6 +61,18 @@ class TheaterController:
         """Получение списка всех сюжетов."""
         return self.db.get_plots()
 
+    def add_new_plot(self, title, minimum_budget, production_cost, roles_count, demand, required_ranks):
+        """Добавление нового сюжета в базу данных."""
+        return self.db.add_plot(title, minimum_budget, production_cost, roles_count, demand, required_ranks)
+
+    def update_plot(self, plot_id, title, minimum_budget, production_cost, roles_count, demand, required_ranks):
+        """Обновление данных сюжета."""
+        return self.db.update_plot(plot_id, title, minimum_budget, production_cost, roles_count, demand, required_ranks)
+
+    def delete_plot_by_id(self, plot_id):
+        """Удаление сюжета по ID."""
+        return self.db.delete_plot(plot_id)
+
     def get_performances_history(self):
         """Получение истории всех постановок."""
         return self.db.get_performances()
