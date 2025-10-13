@@ -6,7 +6,7 @@ import psycopg2
 from logger import Logger
 
 
-def test_db_connection(dbname="task1", user="postgres", password="postgres", host="localhost", port="5432"):
+def test_db_connection(dbname="taskBD", user="artem", password="postgres", host="localhost", port="5432"):
     """
     Проверяет соединение с базой данных PostgreSQL.
 

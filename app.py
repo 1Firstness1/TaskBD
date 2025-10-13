@@ -112,7 +112,7 @@ class LoginDialog(QDialog):
 
         # Выбор базы данных
         self.db_combo = QComboBox()
-        self.db_combo.addItem("task1")
+        self.db_combo.addItem("taskBD")
         self.db_combo.addItem("postgres")
         self.db_combo.setStyleSheet("""
             QComboBox {
@@ -169,7 +169,7 @@ class LoginDialog(QDialog):
         form_layout.addRow(port_label, self.port_edit)
 
         # Поле для ввода имени пользователя
-        self.user_edit = ValidatedLoginLineEdit("postgres")
+        self.user_edit = ValidatedLoginLineEdit("artem")
         self.user_edit.setStyleSheet("color: black;")
         user_label = QLabel("Пользователь:")
         user_label.setStyleSheet(form_label_style)

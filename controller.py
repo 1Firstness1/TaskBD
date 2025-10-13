@@ -346,8 +346,9 @@ class TheaterController:
         """
         Проверка валидности текстового ввода.
         Разрешены только буквы, цифры и пробелы.
+        Максимальная длина - 100 символов.
         """
-        return bool(re.match(r'^[а-яА-Яa-zA-Z0-9\s]+$', text))
+        return len(text) <= 100 and bool(re.match(r'^[а-яА-Яa-zA-Z0-9\s]+$', text))
 
     def close(self):
         """Закрытие соединения с БД."""
