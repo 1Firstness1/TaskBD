@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QPushButton, QLabel, Q
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont, QIntValidator
 
-from controller import TheaterController
+from controller import TheaterController, NumericTableItem, RankTableItem, CurrencyTableItem, ValidatedLineEdit
 from logger import Logger
 
 
@@ -789,88 +789,6 @@ class MainWindow(QMainWindow):
         """Обработка события закрытия окна."""
         self.controller.close()
         event.accept()
-
-
-# Вспомогательные классы для таблиц
-
-class NumericTableItem(QTableWidgetItem):
-    """
-    Элемент таблицы для числовых значений с правильной сортировкой.
-    """
-
-    def __init__(self, text, value):
-        super().__init__(text)
-        self.value = value
-
-    def __lt__(self, other):
-        """Сравнение по числовому значению, а не по тексту."""
-        if hasattr(other, 'value'):
-            return self.value < other.value
-        return super().__lt__(other)
-
-
-class RankTableItem(QTableWidgetItem):
-    """
-    Элемент таблицы для званий актеров с правильной сортировкой.
-    """
-
-    def __init__(self, text):
-        super().__init__(text)
-        rank_order = ['Начинающий', 'Постоянный', 'Ведущий', 'Мастер', 'Заслуженный', 'Народный']
-        self.rank_index = rank_order.index(text) if text in rank_order else -1
-
-    def __lt__(self, other):
-        """Сравнение по порядку званий, а не по алфавиту."""
-        if isinstance(other, RankTableItem):
-            return self.rank_index < other.rank_index
-        return super().__lt__(other)
-
-
-class CurrencyTableItem(QTableWidgetItem):
-    """
-    Элемент таблицы для денежных значений с правильной сортировкой.
-    """
-
-    def __init__(self, text, value):
-        super().__init__(text)
-        self.value = value
-
-    def __lt__(self, other):
-        """Сравнение по числовому значению, а не по тексту."""
-        if hasattr(other, 'value'):
-            return self.value < other.value
-        return super().__lt__(other)
-
-
-class ValidatedLineEdit(QLineEdit):
-    """
-    Поле ввода с валидацией текста.
-    Разрешает только определенные символы, заданные в контроллере.
-    """
-
-    def __init__(self, controller, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.controller = controller
-
-    def keyPressEvent(self, event):
-        """Обработка нажатия клавиш с валидацией."""
-        # Сохраняем текущий текст и позицию курсора
-        old_text = self.text()
-        cursor_pos = self.cursorPosition()
-
-        # Вызываем стандартную обработку нажатия клавиш
-        super().keyPressEvent(event)
-
-        # Проверяем валидность нового текста
-        new_text = self.text()
-
-        # Если текст пустой, разрешаем его
-        if not new_text or self.controller.is_valid_text_input(new_text):
-            return
-
-        # Если текст не валиден, восстанавливаем старый текст
-        self.setText(old_text)
-        self.setCursorPosition(cursor_pos)
 
 
 class NewPerformanceDialog(QDialog):
