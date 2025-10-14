@@ -10,7 +10,6 @@ from PySide6.QtGui import QFont
 
 from controller import TheaterController
 from logger import Logger
-from login_d import LoginDialog
 from new_performance_d import NewPerformanceDialog
 from performance_d import PerformanceHistoryDialog, PerformanceDetailsDialog
 from plot_d import PlotManagementDialog
