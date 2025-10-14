@@ -243,10 +243,6 @@ class DatabaseManager:
                     current_year INTEGER NOT NULL DEFAULT 2025 CHECK (current_year >= 2022),
                     capital BIGINT NOT NULL DEFAULT 1000000 CHECK (capital >= 0)
                 );
-
-                INSERT INTO game_data (id, current_year, capital)
-                SELECT 1, 2025, 1000000
-                WHERE NOT EXISTS (SELECT 1 FROM game_data WHERE id = 1);
             """)
 
             self.connection.commit()
@@ -265,13 +261,13 @@ class DatabaseManager:
             bool: Успешность инициализации
         """
         try:
-            # Проверка наличия записи в game_data
-            self.cursor.execute("SELECT COUNT(*) FROM game_data")
-            if self.cursor.fetchone()[0] == 0:
-                self.cursor.execute("""
-                    INSERT INTO game_data (id, current_year, capital)
-                    VALUES (1, 2025, 1000000)
-                """)
+            # Добавление игровых данных
+            self.cursor.execute("""
+                INSERT INTO game_data (id, current_year, capital)
+                VALUES (1, 2025, 1000000)
+                ON CONFLICT (id) DO UPDATE
+                SET current_year = 2025, capital = 1000000
+            """)
 
             # Добавление тестовых актеров
             actors = [
@@ -388,12 +384,6 @@ class DatabaseManager:
             self.cursor.execute("ALTER SEQUENCE actors_actor_id_seq RESTART WITH 1")
             self.cursor.execute("ALTER SEQUENCE plots_plot_id_seq RESTART WITH 1")
             self.cursor.execute("ALTER SEQUENCE performances_performance_id_seq RESTART WITH 1")
-
-            # Вставка начальных данных игры
-            self.cursor.execute("""
-                INSERT INTO game_data (id, current_year, capital)
-                VALUES (1, 2025, 1000000)
-            """)
 
             # Инициализация тестовыми данными
             self.init_sample_data()
@@ -531,6 +521,111 @@ class DatabaseManager:
         except psycopg2.Error as e:
             self.logger.error(f"Ошибка получения игровых данных: {str(e)}")
             return None
+
+    def add_plot(self, title, minimum_budget, production_cost, roles_count, demand, required_ranks):
+        """
+        Добавление нового сюжета в базу данных.
+
+        Args:
+            title: Название сюжета
+            minimum_budget: Минимальный бюджет
+            production_cost: Стоимость постановки
+            roles_count: Количество ролей
+            demand: Спрос (1-10)
+            required_ranks: Список минимальных званий для ролей
+
+        Returns:
+            int or None: ID добавленного сюжета или None при ошибке
+        """
+        try:
+            self.cursor.execute("""
+                INSERT INTO plots (title, minimum_budget, production_cost, roles_count, demand, required_ranks)
+                VALUES (%s, %s, %s, %s, %s, %s::actor_rank[])
+                RETURNING plot_id
+            """, (title, minimum_budget, production_cost, roles_count, demand, required_ranks))
+            plot_id = self.cursor.fetchone()[0]
+            self.connection.commit()
+            self.logger.info(f"Добавлен сюжет с ID {plot_id}")
+            return plot_id
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            self.logger.error(f"Ошибка добавления сюжета: {str(e)}")
+            return None
+
+    def update_plot(self, plot_id, title, minimum_budget, production_cost, roles_count, demand, required_ranks):
+        """
+        Обновление данных сюжета.
+
+        Args:
+            plot_id: ID сюжета
+            title: Название сюжета
+            minimum_budget: Минимальный бюджет
+            production_cost: Стоимость постановки
+            roles_count: Количество ролей
+            demand: Спрос (1-10)
+            required_ranks: Список минимальных званий для ролей
+
+        Returns:
+            tuple: (успех операции (bool), сообщение об ошибке (str))
+        """
+        try:
+            self.cursor.execute("""
+                UPDATE plots
+                SET title = %s, minimum_budget = %s, production_cost = %s, 
+                    roles_count = %s, demand = %s, required_ranks = %s::actor_rank[]
+                WHERE plot_id = %s
+                RETURNING plot_id
+            """, (title, minimum_budget, production_cost, roles_count, demand, required_ranks, plot_id))
+
+            updated_id = self.cursor.fetchone()
+            if not updated_id:
+                self.logger.error(f"Сюжет с ID {plot_id} не найден")
+                return False, "Сюжет не найден"
+
+            self.connection.commit()
+            self.logger.info(f"Обновлен сюжет с ID {plot_id}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            self.logger.error(f"Ошибка обновления сюжета: {str(e)}")
+            return False, str(e)
+
+    def delete_plot(self, plot_id):
+        """
+        Удаление сюжета из базы данных.
+
+        Args:
+            plot_id: ID сюжета
+
+        Returns:
+            tuple: (успех операции (bool), сообщение об ошибке (str))
+        """
+        try:
+            # Проверка использования сюжета в спектаклях
+            self.cursor.execute("""
+                SELECT COUNT(*) FROM performances
+                WHERE plot_id = %s
+            """, (plot_id,))
+
+            if self.cursor.fetchone()[0] > 0:
+                self.logger.error(f"Сюжет с ID {plot_id} используется в спектаклях")
+                return False, "Сюжет используется в спектаклях и не может быть удален"
+
+            # Проверка минимального количества сюжетов
+            self.cursor.execute("SELECT COUNT(*) FROM plots")
+            if self.cursor.fetchone()[0] <= 5:
+                self.logger.error("Невозможно удалить сюжет: минимальное число сюжетов - 5")
+                return False, "Минимальное число сюжетов - 5"
+
+            # Удаление сюжета
+            self.cursor.execute("DELETE FROM plots WHERE plot_id = %s", (plot_id,))
+            self.connection.commit()
+            self.logger.info(f"Удален сюжет с ID {plot_id}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            self.logger.error(f"Ошибка удаления сюжета: {str(e)}")
+            return False, str(e)
 
     def update_game_data(self, year, capital):
         """
