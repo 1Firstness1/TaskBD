@@ -378,9 +378,16 @@ class MainWindow(QMainWindow):
 
     def open_new_show_dialog(self):
         """Открытие диалога создания новой постановки."""
-        dialog = NewPerformanceDialog(self.controller, self)
-        if dialog.exec():
-            self.update_game_info()
+        try:
+            dialog = NewPerformanceDialog(self.controller, self)
+            if dialog.exec():
+                self.update_game_info()
+        except Exception as e:
+            err_box = QMessageBox(self)
+            err_box.setWindowTitle("Ошибка")
+            err_box.setText(f"Не удалось получить данные о игровой сессии.")
+            err_box.setIcon(QMessageBox.Critical)
+            err_box.exec()
 
     def show_history(self):
         """Просмотр истории постановок."""
@@ -415,25 +422,35 @@ class MainWindow(QMainWindow):
 
     def skip_year(self):
         """Пропуск текущего года и получение дохода от продажи прав."""
-        # Запрос подтверждения
-        result = QMessageBox.question(
-            self,
-            "Пропустить год",
-            "Вы уверены, что хотите пропустить год? Театр продаст права на постановку другому театру и получит случайный доход.",
-            QMessageBox.Yes | QMessageBox.No
-        )
+        game_data = self.controller.get_game_state()
 
-        if result == QMessageBox.Yes:
-            # Пропуск года
-            skip_result = self.controller.skip_year()
-            # Отображение результата
-            QMessageBox.information(
+        if game_data and 'current_year' in game_data and 'capital' in game_data:
+            # Запрос подтверждения
+            result = QMessageBox.question(
                 self,
-                "Год пропущен",
-                f"Вы пропустили год. Сейчас {skip_result['year']} год.\n\n"
-                f"Театр получил {skip_result['rights_sale']:,} ₽ за продажу прав на постановку.".replace(',', ' ')
+                "Пропустить год",
+                "Вы уверены, что хотите пропустить год? Театр продаст права на постановку другому театру и получит случайный доход.",
+                QMessageBox.Yes | QMessageBox.No
             )
-            self.update_game_info()
+
+            if result == QMessageBox.Yes:
+                # Пропуск года
+                skip_result = self.controller.skip_year()
+                # Отображение результата
+                QMessageBox.information(
+                    self,
+                    "Год пропущен",
+                    f"Вы пропустили год. Сейчас {skip_result['year']} год.\n\n"
+                    f"Театр получил {skip_result['rights_sale']:,} ₽ за продажу прав на постановку.".replace(',',
+                                                                                                             ' ')
+                )
+                self.update_game_info()
+        else:
+            err_box = QMessageBox(self)
+            err_box.setWindowTitle("Ошибка")
+            err_box.setText(f"Не удалось получить данные о игровой сессии.")
+            err_box.setIcon(QMessageBox.Critical)
+            err_box.exec()
 
     def disconnect_from_db(self):
         """Отключение от базы данных и выход из программы."""
