@@ -6,7 +6,6 @@ import random
 import re
 from data import DatabaseManager, ActorRank
 from logger import Logger
-# Добавляем импорты из Qt для работы с таблицами
 from PySide6.QtWidgets import QTableWidgetItem, QLineEdit
 from PySide6.QtCore import Qt
 
@@ -113,12 +112,10 @@ class TheaterController:
         Returns:
             tuple: (успех операции (bool), ID спектакля или сообщение об ошибке)
         """
-        # Проверка достаточности капитала
         game_data = self.db.get_game_data()
         if game_data['capital'] < budget:
             return False, "Недостаточно средств в капитале"
 
-        # Проверка сюжета и минимального бюджета
         plots = self.db.get_plots()
         plot = next((p for p in plots if p['plot_id'] == plot_id), None)
 
@@ -128,11 +125,9 @@ class TheaterController:
         if budget < plot['minimum_budget']:
             return False, "Бюджет меньше минимально необходимого для данного сюжета"
 
-        # Создание спектакля в БД
         performance_id = self.db.create_performance(title, plot_id, year, budget)
 
         if performance_id:
-            # Обновление капитала театра
             new_capital = game_data['capital'] - budget
             self.db.update_game_data(year, new_capital)
             return True, performance_id
@@ -153,18 +148,14 @@ class TheaterController:
         Returns:
             dict: Стоимость контракта, премии и общая сумма
         """
-        # Базовая стоимость контракта
         base_cost = 30000
 
-        # Бонус за звание
         rank_order = ['Начинающий', 'Постоянный', 'Ведущий', 'Мастер', 'Заслуженный', 'Народный']
         rank_bonus = rank_order.index(actor['rank']) * 10000
 
-        # Бонусы за опыт и награды
         experience_bonus = actor['experience'] * 2000
         awards_bonus = actor['awards_count'] * 5000
 
-        # Расчет итоговой стоимости
         contract_cost = base_cost + rank_bonus + experience_bonus + awards_bonus
         premium = contract_cost / 5
 
@@ -184,48 +175,37 @@ class TheaterController:
         Returns:
             tuple: (успех операции (bool), результаты спектакля (dict))
         """
-        # Получение данных спектакля
         performances = self.db.get_performances()
         performance = next((p for p in performances if p['performance_id'] == performance_id), None)
 
         if not performance or performance['is_completed']:
             return False, "Спектакль не найден или уже завершен"
 
-        # Получение данных сюжета
         plots = self.db.get_plots()
         plot = next((p for p in plots if p['plot_id'] == performance['plot_id']), None)
 
-        # Получение списка актеров в спектакле
         actors = self.db.get_actors_in_performance(performance_id)
 
-        # Расчет фактических затрат
         total_spent = plot['production_cost']
         for actor in actors:
             total_spent += actor['contract_cost']
 
-        # Определение фактического бюджета и экономии
         actual_budget = min(performance['budget'], total_spent)
         saved_budget = performance['budget'] - actual_budget
 
-        # Расчет базовой выручки (увеличена для лучшего баланса)
         base_revenue = actual_budget * (0.7 + 0.08 * plot['demand'])
 
-        # Непредвиденные расходы (5-15% от бюджета)
         unexpected_expenses = int(actual_budget * random.uniform(0.05, 0.15))
         self.logger.info(f"Непредвиденные расходы спектакля {performance_id}: {unexpected_expenses}")
 
-        # Проверка соответствия званий актеров требованиям ролей
         rank_order = ['Начинающий', 'Постоянный', 'Ведущий', 'Мастер', 'Заслуженный', 'Народный']
         actors_match_requirements = True
 
-        # Предполагаем, что required_ranks содержит список минимальных званий для ролей
         required_ranks = plot.get('required_ranks', [])
         if isinstance(required_ranks, str) and required_ranks.startswith('{') and required_ranks.endswith('}'):
             required_ranks = required_ranks[1:-1].split(',')
-            # Очистка кавычек
             required_ranks = [r.strip('"') for r in required_ranks]
 
-        # Проверяем соответствие званий, если у нас есть требования
         if required_ranks and len(required_ranks) > 0:
             for i, actor in enumerate(actors):
                 if i < len(required_ranks):
@@ -239,58 +219,43 @@ class TheaterController:
                                 f"Актер {actor['last_name']} ({actor['rank']}) не соответствует требованию {required_rank}")
                             break
 
-        # Расчет бонусов за актеров (улучшено для избежания больших убытков)
         actors_bonus = 0
         for actor in actors:
             rank_index = rank_order.index(actor['rank'])
-            # Улучшенный множитель ранга для более справедливого расчета
             rank_multiplier = 1 + (rank_index * 0.15)
 
             award_bonus = actor['awards_count'] * 0.05
             exp_bonus = actor['experience'] * 0.01
 
-            # Улучшенный расчет вклада актера
             actor_contribution = actor['contract_cost'] * rank_multiplier * (1 + award_bonus + exp_bonus)
             actors_bonus += actor_contribution
 
-        # Определение типа спектакля с учетом соответствия требованиям
         fate_roll = random.random()
-
-        # Корректировка шанса провала в зависимости от соответствия званий
         fail_chance = 0.4 if actors_match_requirements else 0.6
 
-        # Провал: шанс зависит от соответствия званий
         if fate_roll < fail_chance:
             self.logger.info(f"Спектакль {performance_id} оказался провальным!")
-            # При несоответствии званий - еще хуже результат
             random_factor = random.uniform(0.4, 0.7) if actors_match_requirements else random.uniform(0.3, 0.5)
-        # Норма: ~30% шанс с доходом 70-100% от ожидаемого
         elif fate_roll < 0.9:
             self.logger.info(f"Спектакль {performance_id} прошел в обычном режиме")
             random_factor = random.uniform(0.7, 1.0)
-        # Успех: 10% шанс с доходом 100-140% от ожидаемого (увеличен максимальный бонус)
         else:
             self.logger.info(f"Спектакль {performance_id} прошел с большим успехом!")
             random_factor = random.uniform(1.0, 1.4)
 
-        # Итоговая выручка
         total_revenue = int((base_revenue + actors_bonus) * random_factor)
 
-        # Учитываем непредвиденные расходы при расчете прибыли
         total_expenses = actual_budget + unexpected_expenses
         profit = total_revenue - total_expenses
 
-        # Обновление данных в БД - передаем полные расходы включая непредвиденные
         self.db.update_performance_budget(performance_id, total_expenses)
         self.db.complete_performance(performance_id, total_revenue)
 
-        # Обновление игровых данных - ИСПРАВЛЕННЫЙ РАСЧЕТ
         game_data = self.db.get_game_data()
         new_capital = game_data['capital'] + total_revenue + saved_budget - unexpected_expenses
         current_year = game_data['current_year'] + 1
         self.db.update_game_data(current_year, new_capital)
 
-        # Определение успешных актеров для награждения (только если прибыль положительная)
         successful_actors = []
         if profit > 0:
             sorted_actors = sorted(actors,
@@ -299,24 +264,21 @@ class TheaterController:
                                                   a['awards_count']),
                                    reverse=True)
 
-            # Награждение лучших актеров
             for i, actor in enumerate(sorted_actors[:3]):
                 self.db.award_actor(actor['actor_id'])
                 successful_actors.append(actor)
 
-                # Повышение звания самого успешного актера
-                if i == 0 and profit > total_expenses * 0.3:  # Снизили порог для повышения
+                if i == 0 and profit > total_expenses * 0.3:
                     self.db.upgrade_actor_rank(actor['actor_id'])
 
-        # Формирование результатов
         return True, {
             'revenue': total_revenue,
-            'budget': total_expenses,  # Включаем непредвиденные расходы в общий бюджет
+            'budget': total_expenses,
             'original_budget': performance['budget'],
             'saved_budget': saved_budget,
             'profit': profit,
             'awarded_actors': successful_actors,
-            'unexpected_expenses': unexpected_expenses  # Добавлено в результаты
+            'unexpected_expenses': unexpected_expenses
         }
 
     def skip_year(self):
@@ -326,15 +288,12 @@ class TheaterController:
         Returns:
             dict: Новый год, капитал и доход от продажи прав
         """
-        # Получение текущих данных
         game_data = self.db.get_game_data()
         current_year = game_data['current_year']
         current_capital = game_data['capital']
 
-        # Расчет дохода от продажи прав (10-20% от капитала)
         rights_sale = int(current_capital * random.uniform(0.1, 0.2))
 
-        # Обновление данных
         new_capital = current_capital + rights_sale
         new_year = current_year + 1
         self.db.update_game_data(new_year, new_capital)
@@ -368,6 +327,82 @@ class TheaterController:
     def close(self):
         """Закрытие соединения с БД."""
         self.db.disconnect()
+
+    # ============ Методы для TaskDialog ============
+
+    def get_all_tables(self):
+        """Получение списка всех таблиц."""
+        return self.db.get_all_table_names()
+
+    def get_table_columns(self, table_name):
+        """Получение информации о столбцах таблицы."""
+        return self.db.get_table_columns(table_name)
+
+    def get_table_data(self, table_name, columns=None, where=None, order_by=None, group_by=None, having=None, params=None):
+        """Получение данных из таблицы с фильтрацией."""
+        return self.db.get_table_data(table_name, columns, where, order_by, group_by, having, params)
+
+    def add_column(self, table_name, column_name, data_type, nullable=True, default=None):
+        """Добавление столбца в таблицу."""
+        return self.db.add_table_column(table_name, column_name, data_type, nullable, default)
+
+    def drop_column(self, table_name, column_name):
+        """Удаление столбца из таблицы."""
+        return self.db.drop_table_column(table_name, column_name)
+
+    def rename_column(self, table_name, old_name, new_name):
+        """Переименование столбца."""
+        return self.db.rename_table_column(table_name, old_name, new_name)
+
+    def rename_table(self, old_name, new_name):
+        """Переименование таблицы."""
+        return self.db.rename_table(old_name, new_name)
+
+    def alter_column_type(self, table_name, column_name, new_type):
+        """Изменение типа столбца."""
+        return self.db.alter_column_type(table_name, column_name, new_type)
+
+    def set_constraint(self, table_name, column_name, constraint_type, constraint_value=None):
+        """Установка ограничения на столбец."""
+        return self.db.set_column_constraint(table_name, column_name, constraint_type, constraint_value)
+
+    def drop_constraint(self, table_name, column_name, constraint_type):
+        """Снятие ограничения со столбца."""
+        return self.db.drop_column_constraint(table_name, column_name, constraint_type)
+
+    def insert_row(self, table_name, data):
+        """Вставка новой записи."""
+        return self.db.insert_table_row(table_name, data)
+
+    def update_row(self, table_name, data, where_clause, where_params):
+        """Обновление записи."""
+        return self.db.update_table_row(table_name, data, where_clause, where_params)
+
+    def delete_row(self, table_name, where_clause, where_params):
+        """Удаление записи."""
+        return self.db.delete_table_row(table_name, where_clause, where_params)
+
+    def execute_join(self, tables_info, selected_columns, join_conditions, where=None, order_by=None, group_by=None,
+                     having=None):
+        """Выполнение JOIN запроса (поддержка WHERE/ORDER BY/GROUP BY/HAVING)."""
+        return self.db.execute_join_query(tables_info, selected_columns, join_conditions, where, order_by, group_by,
+                                          having)
+
+    def execute_select(self, query, params=None):
+        """Выполнение произвольного SELECT запроса."""
+        return self.db.execute_select_query(query, params)
+
+    def execute_update(self, query, params=None):
+        """Выполнение произвольного UPDATE запроса."""
+        return self.db.execute_update_query(query, params)
+
+    def create_table(self, table_name, columns):
+        """Создание новой таблицы."""
+        return self.db.create_table(table_name, columns)
+
+    def drop_table(self, table_name):
+        """Удаление таблицы."""
+        return self.db.drop_table(table_name)
 
 
 # Вспомогательные классы для таблиц
@@ -421,6 +456,54 @@ class CurrencyTableItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+class DateTableItem(QTableWidgetItem):
+    """
+    Элемент таблицы для дат с правильной сортировкой.
+    """
+
+    def __init__(self, text, date_value):
+        super().__init__(text)
+        self.date_value = date_value
+
+    def __lt__(self, other):
+        """Сравнение по дате, а не по тексту."""
+        if hasattr(other, 'date_value'):
+            return self.date_value < other.date_value
+        return super().__lt__(other)
+
+
+class BooleanTableItem(QTableWidgetItem):
+    """
+    Элемент таблицы для булевых значений с правильной сортировкой.
+    """
+
+    def __init__(self, text, bool_value):
+        super().__init__(text)
+        self.bool_value = bool_value
+
+    def __lt__(self, other):
+        """Сравнение по булевому значению (False < True)."""
+        if hasattr(other, 'bool_value'):
+            return self.bool_value < other.bool_value
+        return super().__lt__(other)
+
+
+class TimestampTableItem(QTableWidgetItem):
+    """
+    Элемент таблицы для временных меток с правильной сортировкой.
+    """
+
+    def __init__(self, text, timestamp_value):
+        super().__init__(text)
+        self.timestamp_value = timestamp_value
+
+    def __lt__(self, other):
+        """Сравнение по временной метке, а не по тексту."""
+        if hasattr(other, 'timestamp_value'):
+            return self.timestamp_value < other.timestamp_value
+        return super().__lt__(other)
+
+
 class ValidatedLoginLineEdit(QLineEdit):
     """
     Поле ввода с валидацией для окна логина.
@@ -433,25 +516,19 @@ class ValidatedLoginLineEdit(QLineEdit):
 
     def keyPressEvent(self, event):
         """Обработка нажатия клавиш с валидацией."""
-        # Сохраняем текущий текст и позицию курсора
         old_text = self.text()
         cursor_pos = self.cursorPosition()
 
-        # Вызываем стандартную обработку нажатия клавиш
         super().keyPressEvent(event)
 
-        # Проверяем валидность нового текста
         new_text = self.text()
 
-        # Если текст пустой, разрешаем его
         if not new_text:
             return
 
-        # Используем функцию валидации
         if self.controller.is_valid_text_input(new_text):
             return
 
-        # Если текст не валиден, восстанавливаем старый текст
         self.setText(old_text)
         self.setCursorPosition(cursor_pos)
 
@@ -468,20 +545,15 @@ class ValidatedLineEdit(QLineEdit):
 
     def keyPressEvent(self, event):
         """Обработка нажатия клавиш с валидацией."""
-        # Сохраняем текущий текст и позицию курсора
         old_text = self.text()
         cursor_pos = self.cursorPosition()
 
-        # Вызываем стандартную обработку нажатия клавиш
         super().keyPressEvent(event)
 
-        # Проверяем валидность нового текста
         new_text = self.text()
 
-        # Если текст пустой, разрешаем его
         if not new_text or self.controller.is_valid_text_input(new_text):
             return
 
-        # Если текст не валиден, восстанавливаем старый текст
         self.setText(old_text)
         self.setCursorPosition(cursor_pos)
