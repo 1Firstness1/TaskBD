@@ -3288,6 +3288,7 @@ class GroupDialog(QDialog):
 
         self.having_op = QComboBox()
         self.having_op.addItems(["=", "!=", "<", "<=", ">", ">="])
+        self.having_op.setMinimumWidth(80)
         having_form.addRow("Оператор:", self.having_op)
 
         self.having_value = QLineEdit()
