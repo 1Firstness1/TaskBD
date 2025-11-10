@@ -7,18 +7,8 @@ from PySide6.QtWidgets import (QDialog, QLabel, QVBoxLayout, QHBoxLayout, QFormL
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QIntValidator
 
-from controller import TheaterController, ValidatedLineEdit
+from controller import TheaterController, ValidatedLoginLineEdit
 from logger import Logger
-
-
-class ValidatedLoginLineEdit(ValidatedLineEdit):
-    """
-    Поле ввода с валидацией для окна логина.
-    Разрешает только определенные символы.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(TheaterController(), *args, **kwargs)
 
 
 class LoginDialog(QDialog):

@@ -14,6 +14,7 @@ from new_performance_d import NewPerformanceDialog
 from performance_d import PerformanceHistoryDialog, PerformanceDetailsDialog
 from plot_d import PlotManagementDialog
 from actor_d import ActorsManagementDialog
+from task_d import TaskDialog
 
 
 class MainWindow(QMainWindow):
@@ -28,7 +29,7 @@ class MainWindow(QMainWindow):
         self.logger = Logger()
 
         self.setWindowTitle("Театральный менеджер")
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(1100, 700)
 
         # Установка стилей для всего приложения
         self.set_application_style()
@@ -85,6 +86,7 @@ class MainWindow(QMainWindow):
         <p><b>5. Сюжеты</b> - добавляйте и удаляйте сюжеты</p>
         <p><b>6. Актёры</b> - добавляйте и удаляйте актеров</p>
         <p><b>7. Пропустить год</b> - продайте права на постановку и получите дополнительные средства</p>
+        <p><b>8. ТЗ</b> - Техническое задание для выполнения контрольной</p>
         """
         instruction_label = QLabel(instruction_text)
         instruction_label.setWordWrap(True)
@@ -156,6 +158,11 @@ class MainWindow(QMainWindow):
         self.skip_year_btn = QPushButton("Пропустить год")
         self.skip_year_btn.clicked.connect(self.skip_year)
         buttons_layout.addWidget(self.skip_year_btn)
+
+        # Кнопка технического задания (управление БД)
+        self.task_btn = QPushButton("ТЗ")
+        self.task_btn.clicked.connect(self.open_task_dialog)
+        buttons_layout.addWidget(self.task_btn)
 
         main_layout.addLayout(buttons_layout)
 
@@ -418,6 +425,11 @@ class MainWindow(QMainWindow):
         dialog = ActorsManagementDialog(self.controller, self)
         if dialog.exec():
             self.update_game_info()
+
+    def open_task_dialog(self):
+        """Открытие диалога технического задания (управление БД)."""
+        dialog = TaskDialog(self.controller, self)
+        dialog.exec()
 
     def skip_year(self):
         """Пропуск текущего года и получение дохода от продажи прав."""
