@@ -1091,6 +1091,31 @@ class AddColumnDialog(QDialog):
         """Настройка UI."""
         layout = QFormLayout(self)
 
+        checkbox_style = """
+                QCheckBox {
+                    color: #333333;
+                }
+                QCheckBox::indicator {
+                    width: 14px;
+                    height: 14px;
+                    border: 1px solid #c0c0c0;
+                    border-radius: 3px;
+                    background: white;
+                }
+                QCheckBox::indicator:hover {
+                    border: 1px solid #3a76d8;
+                    background: #f0f6ff;
+                }
+                QCheckBox::indicator:checked {
+                    background-color: #4a86e8;
+                    border: 1px solid #2a66c8;
+                    image: none;
+                }
+                QCheckBox::indicator:checked:hover {
+                    background-color: #3a76d8;
+                }
+                """
+
         self.name_edit = QLineEdit()
         layout.addRow("Имя столбца:", self.name_edit)
 
@@ -1103,8 +1128,7 @@ class AddColumnDialog(QDialog):
 
         self.nullable_check = QCheckBox("Может быть NULL")
         self.nullable_check.setChecked(True)
-        # Цвет текста чёрный
-        self.nullable_check.setStyleSheet("color: #333333;")
+        self.nullable_check.setStyleSheet(checkbox_style)
         layout.addRow("", self.nullable_check)
 
         self.default_edit = QLineEdit()
@@ -2356,6 +2380,11 @@ class SelectTableDialog(QDialog):
         self.scroll_area = None
         self.task_dialog = task_dialog
 
+        # атрибуты для чекбоксов/скролла
+        self.columns_checks = {}
+        self.scroll_widget = None
+        self.scroll_layout = None
+
         self.setWindowTitle("Выбрать таблицу")
         self.setMinimumWidth(500)
         self.setMinimumHeight(400)
@@ -2384,7 +2413,6 @@ class SelectTableDialog(QDialog):
         elif self.selected_table and self.selected_table in tables:
             self.table_combo.setCurrentText(self.selected_table)
 
-        self.table_combo.currentTextChanged.connect(self.on_table_changed)
         table_layout.addWidget(self.table_combo)
 
         rename_btn = QPushButton("Переименовать")
@@ -2396,7 +2424,7 @@ class SelectTableDialog(QDialog):
 
         layout.addWidget(QLabel("<b>Выберите столбцы:</b>"))
 
-        checkbox_style = """
+        self.checkbox_style = """
         QCheckBox {
             color: white;
         }
@@ -2421,48 +2449,66 @@ class SelectTableDialog(QDialog):
         }
         """
 
-        self.columns_checks = {}
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout(scroll_widget)
-
-        current_columns = self.controller.get_table_columns(self.table_combo.currentText())
-
-        for col in current_columns:
-            check = QCheckBox(f"{col['name']} ({col['type']})")
-            check.setChecked(True)
-            check.setStyleSheet(checkbox_style)
-            self.columns_checks[col['name']] = check
-            scroll_layout.addWidget(check)
-
-        scroll_layout.addStretch()
-        self.scroll_area.setWidget(scroll_widget)
+        self.scroll_widget = QWidget()
+        self.scroll_layout = QVBoxLayout(self.scroll_widget)
+        self.scroll_area.setWidget(self.scroll_widget)
         layout.addWidget(self.scroll_area)
+
+        # первичное заполнение и подписка на смену таблицы
+        self.table_combo.currentTextChanged.connect(self._populate_column_checkboxes)
+        self._populate_column_checkboxes(self.table_combo.currentText())
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept_dialog)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _clear_layout_safe(self, vlayout):
+        """Безопасно очищает layout, не удаляя сам объект layout и не трогая scroll_area."""
+        if vlayout is None:
+            return
+        while vlayout.count():
+            item = vlayout.takeAt(vlayout.count() - 1)
+            if not item:
+                continue
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+            child = item.layout()
+            if child is not None:
+                self._clear_layout_safe(child)
+
+    def _populate_column_checkboxes(self, table_name):
+        """Переиспользует один и тот же контейнер для чекбоксов, предотвращая удаление C++ объектов."""
+        if not hasattr(self, "scroll_layout") or self.scroll_layout is None:
+            return
+
+        self._clear_layout_safe(self.scroll_layout)
+        self.columns_checks = {}
+
+        if not table_name:
+            return
+
+        columns = self.controller.get_table_columns(table_name) or []
+
+        for col in columns:
+            # создаём чекбокс с родителем контейнера, применяем стиль и явную LTR-направленность
+            cb = QCheckBox(f"{col['name']} ({col['type']})", parent=self.scroll_widget)
+            cb.setChecked(True)
+            cb.setLayoutDirection(Qt.LeftToRight)
+            cb.setStyleSheet(self.checkbox_style)
+            self.columns_checks[col['name']] = cb
+            self.scroll_layout.addWidget(cb)
+
+        # тянущийся разделитель
+        self.scroll_layout.addStretch()
+
     def on_table_changed(self, table_name):
-        """Обработка изменения таблицы."""
-        if table_name:
-            columns = self.controller.get_table_columns(table_name)
-            self.columns_checks.clear()
-
-            if self.scroll_area:
-                scroll_widget = QWidget()
-                scroll_layout = QVBoxLayout(scroll_widget)
-
-                for col in columns:
-                    check = QCheckBox(f"{col['name']} ({col['type']})")
-                    check.setChecked(True)
-                    self.columns_checks[col['name']] = check
-                    scroll_layout.addWidget(check)
-
-                scroll_layout.addStretch()
-                self.scroll_area.setWidget(scroll_widget)
+        """Обработка изменения таблицы (оставлено для совместимости, делегирует на безопасный апдейт)."""
+        self._populate_column_checkboxes(table_name)
 
     def rename_table(self):
         """Переименование таблицы."""
@@ -2487,6 +2533,9 @@ class SelectTableDialog(QDialog):
 
                 if self.task_dialog:
                     self.task_dialog.update_table_name(old_name, new_name)
+
+                # после переименования обновим чекбоксы текущей таблицы
+                self._populate_column_checkboxes(new_name)
             else:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось переименовать таблицу:\n{error}")
 
@@ -2495,7 +2544,6 @@ class SelectTableDialog(QDialog):
         self.selected_table = self.table_combo.currentText()
         selected = [name for name, check in self.columns_checks.items() if check.isChecked()]
         self.selected_columns = selected if selected else None
-
         self.accept()
 
 
@@ -2539,9 +2587,7 @@ class JoinWizardDialog(QDialog):
         if 'task2' in other_tables:
             self.join_table_combo.setCurrentText('task2')
 
-        self.join_table_combo.currentTextChanged.connect(self.update_join_columns)
         join_table_layout.addWidget(self.join_table_combo)
-
         layout.addLayout(join_table_layout)
 
         join_type_layout = QHBoxLayout()
@@ -2550,7 +2596,6 @@ class JoinWizardDialog(QDialog):
         self.join_type_combo = QComboBox()
         self.join_type_combo.addItems(["INNER", "LEFT", "RIGHT", "FULL"])
         join_type_layout.addWidget(self.join_type_combo)
-
         layout.addLayout(join_type_layout)
 
         layout.addWidget(QLabel("<b>Условие соединения (ON):</b>"))
@@ -2582,8 +2627,7 @@ class JoinWizardDialog(QDialog):
             color: white;
         }
         QCheckBox::indicator {
-            width: 14px;
-            height: 14px;
+            width: 14px; height: 14px;
             border: 1px solid #c0c0c0;
             border-radius: 3px;
             background: white;
@@ -2601,7 +2645,9 @@ class JoinWizardDialog(QDialog):
             background-color: #3a76d8;
         }
         """
+        self.checkbox_style = checkbox_style
 
+        # ---- базовая таблица
         base_group = QGroupBox(f"Столбцы таблицы {self.base_table}")
         base_layout = QVBoxLayout(base_group)
         base_scroll = QScrollArea()
@@ -2609,11 +2655,13 @@ class JoinWizardDialog(QDialog):
         base_scroll_widget = QWidget()
         base_scroll_layout = QVBoxLayout(base_scroll_widget)
 
-        base_columns = self.controller.get_table_columns(self.base_table)
+        self.base_columns_checks = {}
+        base_columns = self.controller.get_table_columns(self.base_table) or []
         for col in base_columns:
-            check = QCheckBox(f"{col['name']}")
+            check = QCheckBox(f"{col['name']}", parent=base_scroll_widget)
             check.setChecked(True)
-            check.setStyleSheet(checkbox_style)
+            check.setLayoutDirection(Qt.LeftToRight)
+            check.setStyleSheet(self.checkbox_style)
             self.base_columns_checks[col['name']] = check
             base_scroll_layout.addWidget(check)
 
@@ -2622,10 +2670,12 @@ class JoinWizardDialog(QDialog):
         base_layout.addWidget(base_scroll)
         columns_layout.addWidget(base_group)
 
+        # ---- присоединяемая таблица
         join_group = QGroupBox(f"Столбцы присоединяемой таблицы")
         join_layout = QVBoxLayout(join_group)
         self.join_scroll = QScrollArea()
         self.join_scroll.setWidgetResizable(True)
+
         self.join_scroll_widget = QWidget()
         self.join_scroll_layout = QVBoxLayout(self.join_scroll_widget)
         self.join_scroll.setWidget(self.join_scroll_widget)
@@ -2634,24 +2684,9 @@ class JoinWizardDialog(QDialog):
 
         self.join_columns_checks = {}
 
-        def add_join_checkboxes(table_name):
-            for i in reversed(range(self.join_scroll_layout.count())):
-                widget = self.join_scroll_layout.itemAt(i).widget()
-                if widget:
-                    widget.setParent(None)
-            if not table_name:
-                return
-            join_columns = self.controller.get_table_columns(table_name)
-            for col in join_columns:
-                check = QCheckBox(f"{col['name']}")
-                check.setChecked(True)
-                check.setStyleSheet(checkbox_style)
-                self.join_columns_checks[col['name']] = check
-                self.join_scroll_layout.addWidget(check)
-            self.join_scroll_layout.addStretch()
-
-        add_join_checkboxes(self.join_table_combo.currentText())
-        self.join_table_combo.currentTextChanged.connect(add_join_checkboxes)
+        # подключаем слот и делаем первичную инициализацию
+        self.join_table_combo.currentTextChanged.connect(self._populate_join_checkboxes)
+        self._populate_join_checkboxes(self.join_table_combo.currentText())
 
         layout.addLayout(columns_layout)
 
@@ -2660,6 +2695,57 @@ class JoinWizardDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _clear_layout_safe(self, vlayout):
+        """Безопасно очищает layout, не удаляя сам layout-объект."""
+        if vlayout is None:
+            return
+        while vlayout.count():
+            item = vlayout.takeAt(vlayout.count() - 1)
+            if item is None:
+                continue
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+            child_layout = item.layout()
+            if child_layout is not None:
+                self._clear_layout_safe(child_layout)
+
+    def _populate_join_checkboxes(self, table_name):
+        """Заполняет чекбоксы колонок присоединяемой таблицы, переиспользуя один и тот же layout."""
+        if not hasattr(self, "join_scroll_layout") or self.join_scroll_layout is None:
+            return
+
+        self._clear_layout_safe(self.join_scroll_layout)
+        self.join_columns_checks = {}
+
+        if not table_name:
+            self.join_table_label.setText("")
+            self.join_column_combo.clear()
+            return
+
+        self.join_table_label.setText(table_name)
+        join_columns = self.controller.get_table_columns(table_name) or []
+
+        for col in join_columns:
+            check = QCheckBox(f"{col['name']}", parent=self.join_scroll_widget)
+            check.setChecked(True)
+            check.setLayoutDirection(Qt.LeftToRight)
+            check.setStyleSheet(self.checkbox_style)
+            self.join_columns_checks[col['name']] = check
+            self.join_scroll_layout.addWidget(check)
+
+        self.join_scroll_layout.addStretch()
+
+        cur = self.join_column_combo.currentText()
+        self.join_column_combo.blockSignals(True)
+        self.join_column_combo.clear()
+        for col in join_columns:
+            self.join_column_combo.addItem(col['name'])
+        if cur and cur in [c['name'] for c in join_columns]:
+            self.join_column_combo.setCurrentText(cur)
+        self.join_column_combo.blockSignals(False)
+
     def update_base_columns(self):
         """Обновление списка столбцов базовой таблицы."""
         columns = self.controller.get_table_columns(self.base_table)
@@ -2667,27 +2753,10 @@ class JoinWizardDialog(QDialog):
         self.base_column_combo.addItems([col['name'] for col in columns])
 
     def update_join_columns(self, table_name):
-        """Обновление списка столбцов присоединяемой таблицы."""
+        """Обновление списка столбцов присоединяемой таблицы (без пересоздания виджетов)."""
         if not table_name:
             return
-
-        self.join_table_label.setText(table_name)
-        columns = self.controller.get_table_columns(table_name)
-        self.join_column_combo.clear()
-        self.join_column_combo.addItems([col['name'] for col in columns])
-
-        join_scroll_widget = QWidget()
-        join_scroll_layout = QVBoxLayout(join_scroll_widget)
-        self.join_columns_checks = {}
-
-        for col in columns:
-            check = QCheckBox(f"{col['name']}")
-            check.setChecked(True)
-            self.join_columns_checks[col['name']] = check
-            join_scroll_layout.addWidget(check)
-
-        join_scroll_layout.addStretch()
-        self.join_scroll.setWidget(join_scroll_widget)
+        self._populate_join_checkboxes(table_name)
 
     def get_join_config(self):
         """Получение конфигурации JOIN."""
@@ -3089,6 +3158,10 @@ class ColumnActionsDialog(QDialog):
                 self.task_dialog.add_where_clause(where_clause)
 
     def open_group(self):
+        if self.task_dialog.is_join_mode:
+            QMessageBox.information(self, "Недоступно", "Группировка недоступна при активных соединениях (JOIN).")
+            return
+
         dlg = GroupDialog(self.selected_column, self.columns_info, self)
         if dlg.exec_():
             if dlg.group_by_selected and hasattr(self.task_dialog, "add_group_by_column"):
