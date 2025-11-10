@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushB
                               QComboBox, QLineEdit, QMenu, QInputDialog, QCheckBox,
                               QSpinBox, QFormLayout, QTextEdit, QDialogButtonBox, QWidget,
                               QScrollArea, QRadioButton, QButtonGroup, QGroupBox,
-                              QDateEdit, QDoubleSpinBox, QTimeEdit)
+                              QDateEdit, QDoubleSpinBox, QTimeEdit, QListWidget, QTabWidget)
 from PySide6.QtCore import Qt, QDate, QTime
 from PySide6.QtGui import QAction
 from controller import NumericTableItem, DateTableItem, BooleanTableItem, TimestampTableItem, ValidatedLineEdit
@@ -126,6 +126,11 @@ class TaskDialog(QDialog):
         self.delete_btn = QPushButton("Удалить")
         self.delete_btn.clicked.connect(self.show_delete_menu)
         buttons_layout.addWidget(self.delete_btn)
+
+        # Кнопка типов данных
+        self.types_btn = QPushButton("Типы данных")
+        self.types_btn.clicked.connect(self.open_types_dialog)
+        buttons_layout.addWidget(self.types_btn)
 
         buttons_layout.addStretch()
 
@@ -534,72 +539,90 @@ class TaskDialog(QDialog):
             self.logger.info(f"Добавлен HAVING: {clause}")
             self.refresh_with_current_clauses()
 
+    def add_select_expression(self, expression: str):
+        """
+        Добавляет вычисляемое выражение (CASE / COALESCE / NULLIF / функции) в список select_expressions.
+        """
+        if expression and expression not in self.select_expressions:
+            self.select_expressions.append(expression)
+
     def load_table_data_filtered(self, columns=None, where=None, order_by=None, group_by=None, having=None,
                                  params=None, _select_override=None):
         """
-        Загрузка данных таблицы с фильтрацией/группировкой. Работает и в режиме JOIN.
+        Загрузка данных таблицы с учетом текущих условий (WHERE / ORDER BY / GROUP BY / HAVING)
+        и добавленных вычисляемых выражений (self.select_expressions: CASE, COALESCE, NULLIF и т.д.).
 
-        columns: список заголовков столбцов (если требуется переопределить отображаемые заголовки).
-        _select_override: список выражений для SELECT (если нужно выбрать выражения/агрегаты, а не простые имена).
+        columns               - список "базовых" столбцов для отображения (заголовки). Если None -> все.
+        where, order_by, group_by, having - части запроса.
+        params                - параметры для безопасного WHERE (используются только в основном режиме без JOIN).
+        _select_override      - список явных выражений для SELECT (используется при группировке/агрегатах).
+
+        Поведение:
+        1. Обычный режим таблицы:
+           - Формируется select_part на основе базовых столбцов + доп. выражений.
+           - Если _select_override передан, он заменяет базовые столбцы и комбинируется с self.select_expressions.
+        2. JOIN режим:
+           - Берутся выбранные столбцы из join_config (или из mapping по display headers),
+             затем добавляются вычисляемые выражения self.select_expressions.
+           - Выполняется controller.execute_join.
+
+        В конце таблица перерисовывается с актуальными заголовками.
         """
         if not self.current_table:
             return
 
         try:
+            # ================== РЕЖИМ JOIN ==================
             if self.is_join_mode:
-                # В режиме JOIN заголовки и список столбцов зависят от конфигурации или переопределений
+                # 1. Определяем базовые столбцы для SELECT
                 if _select_override is not None:
-                    selected_columns = _select_override
-                    # Заголовки: если columns передан — используем его,
-                    # иначе пробуем вывести по выражениям (_select_override)
-                    if columns is not None:
-                        self.current_columns = columns
-                    else:
-                        # Попробуем извлечь алиасы, иначе заменим точки на подчеркивания
-                        labels = []
-                        mapping = getattr(self, 'original_column_names', {}) or {}
-                        # Получим обратное отображение: table.col -> display
-                        reverse_map = {}
-                        for disp, orig in mapping.items():
-                            reverse_map[orig] = disp
-                        for expr in selected_columns:
-                            up = expr.upper()
-                            if " AS " in up:
-                                # берём алиас
-                                parts = expr.rsplit(" AS ", 1)
-                                alias = parts[-1].strip().strip('"')
-                                labels.append(alias)
-                            else:
-                                # если это table.column — попробуем найти читаемую метку
-                                if '.' in expr and '(' not in expr:
-                                    labels.append(reverse_map.get(expr, expr.replace('.', '_')))
-                                else:
-                                    labels.append(expr)
-                        self.current_columns = labels
-                elif group_by:
-                    # Если выбрана только группировка без переопределения SELECT,
-                    # безопасно выбираем только столбец группировки
-                    selected_columns = [group_by]
-
-                    # Подберем человекочитаемый заголовок для group_by
-                    display_label = None
-                    if hasattr(self, 'original_column_names') and self.original_column_names:
-                        for disp, orig in self.original_column_names.items():
-                            if orig == group_by:
-                                display_label = disp
-                                break
-                    if not display_label:
-                        display_label = group_by.replace('.', '_')
-
-                    self.current_columns = [display_label]
+                    # Уже собранный список выражений (например GROUP BY + агрегаты)
+                    base_select_list = list(_select_override)
                 else:
-                    # Без переопределений показываем все выбранные в мастере JOIN столбцы
-                    selected_columns = self.join_config['selected_columns']
-                    self.current_columns = self.join_config['column_labels']
+                    if columns:
+                        # columns здесь — отображаемые имена. Преобразуем обратно в table.column
+                        base_select_list = []
+                        for disp in columns:
+                            if disp in self.original_column_names:
+                                base_select_list.append(self.original_column_names[disp])
+                            else:
+                                # Возможно это уже выражение/алиас
+                                base_select_list.append(disp)
+                    else:
+                        # Используем столбцы из мастера JOIN
+                        base_select_list = list(self.join_config['selected_columns'])
 
+                # 2. Добавляем вычисляемые выражения (CASE/COALESCE/NULLIF) если есть
+                for expr in self.select_expressions:
+                    if expr not in base_select_list:
+                        base_select_list.append(expr)
+
+                # 3. Формируем отображаемые заголовки
+                display_headers = []
+                reverse_map = {orig: disp for disp, orig in self.original_column_names.items()}
+
+                for sel in base_select_list:
+                    upper_sel = sel.upper()
+                    alias = None
+                    if " AS " in upper_sel:
+                        # извлекаем алиас (последний AS)
+                        parts = sel.rsplit(" AS ", 1)
+                        alias = parts[-1].strip().strip('"')
+                    if alias:
+                        display_headers.append(alias)
+                    else:
+                        # Если это table.column без функции
+                        if '.' in sel and '(' not in sel and ' ' not in sel:
+                            display_headers.append(reverse_map.get(sel, sel.replace('.', '_')))
+                        else:
+                            display_headers.append(sel)
+
+                self.current_columns = display_headers
+
+                # 4. Выполнение JOIN
                 results = self.controller.execute_join(
                     self.join_config['tables_info'],
-                    selected_columns,
+                    base_select_list,
                     self.join_config['join_conditions'],
                     where or self.join_config.get('where'),
                     order_by or self.join_config.get('order_by'),
@@ -607,16 +630,29 @@ class TaskDialog(QDialog):
                     having
                 )
                 data = results
+
+            # ================== Обычный режим (без JOIN) ==================
             else:
-                # Обычный режим без JOIN
-                # Если передан _select_override — используем его для SELECT,
-                # а columns (если передан) используем как заголовки
+                # Список выражений для SELECT, если переопределены (агрегаты/группировка)
                 if _select_override is not None:
-                    select_cols = _select_override
-                    self.current_columns = columns if columns else _select_override
+                    # Берём override и дополняем вычисляемыми выражениями
+                    select_list = list(_select_override)
+                    for expr in self.select_expressions:
+                        if expr not in select_list:
+                            select_list.append(expr)
+                    # Заголовки: извлечём алиасы / имена
+                    display_headers = []
+                    for sel in select_list:
+                        up = sel.upper()
+                        alias = None
+                        if " AS " in up:
+                            parts = sel.rsplit(" AS ", 1)
+                            alias = parts[-1].strip().strip('"')
+                        display_headers.append(alias if alias else sel)
+                    self.current_columns = display_headers
                     data = self.controller.get_table_data(
                         self.current_table,
-                        select_cols,
+                        select_list,
                         where,
                         order_by,
                         group_by,
@@ -624,14 +660,57 @@ class TaskDialog(QDialog):
                         params
                     )
                 else:
-                    if columns:
-                        self.current_columns = columns
+                    # Базовые столбцы (для select_part и отображения)
+                    if columns is None:
+                        base_cols_list = [col['name'] for col in self.all_columns_info]
                     else:
+                        base_cols_list = list(columns)
+
+                    # Построение текстовой части базовых столбцов
+                    if columns is None:
+                        base_cols = '*'
+                    else:
+                        base_cols = ', '.join(base_cols_list)
+
+                    # Добавление вычисляемых выражений
+                    if self.select_expressions:
+                        select_part = base_cols + (', ' if base_cols else '') + ', '.join(self.select_expressions)
+                    else:
+                        select_part = base_cols
+
+                    # Формируем итоговый список для передачи в get_table_data:
+                    # Если base_cols == '*', передаем None (чтобы контроллер сам взял все),
+                    # иначе передаем список (без строковых CASE - их надо передать как выражения целиком).
+                    if base_cols == '*':
+                        select_list = None  # controller возьмет все столбцы
                         self.current_columns = [col['name'] for col in self.all_columns_info]
+                        # Добавим заголовки для вычисляемых выражений (если есть)
+                        for expr in self.select_expressions:
+                            up = expr.upper()
+                            alias = None
+                            if " AS " in up:
+                                parts = expr.rsplit(" AS ", 1)
+                                alias = parts[-1].strip().strip('"')
+                            self.current_columns.append(alias if alias else expr)
+                    else:
+                        # Разделяем select_part обратно на элементы только для тех, что не являются '*'
+                        # Базовые столбцы уже есть в base_cols_list; выражения добавим отдельно.
+                        select_list = base_cols_list + self.select_expressions
+
+                        # Заголовки = имена базовых столбцов + алиасы/оригинальные выражения
+                        display_headers = list(base_cols_list)
+                        for expr in self.select_expressions:
+                            up = expr.upper()
+                            alias = None
+                            if " AS " in up:
+                                parts = expr.rsplit(" AS ", 1)
+                                alias = parts[-1].strip().strip('"')
+                            display_headers.append(alias if alias else expr)
+                        self.current_columns = display_headers
 
                     data = self.controller.get_table_data(
                         self.current_table,
-                        self.current_columns if columns else None,
+                        select_list,
                         where,
                         order_by,
                         group_by,
@@ -639,14 +718,14 @@ class TaskDialog(QDialog):
                         params
                     )
 
-            # Отрисовка таблицы
+            # ================== ОТРИСОВКА ТАБЛИЦЫ ==================
             self.data_table.clearSpans()
             self.data_table.setRowCount(0)
             self.data_table.setColumnCount(len(self.current_columns))
             self.data_table.setHorizontalHeaderLabels(self.current_columns)
             self.data_table.setRowCount(len(data))
 
-            from datetime import datetime, date  # локальный импорт, если файл перемещался
+            from datetime import datetime, date  # локальный импорт (защита при перемещении файла)
             for row_idx, row_data in enumerate(data):
                 for col_idx, value in enumerate(row_data):
                     str_value = str(value) if value is not None else ""
@@ -777,6 +856,10 @@ class TaskDialog(QDialog):
         """Выполнение JOIN запроса с учетом сортировки."""
         self.join_config = join_config
         self.execute_join_display(join_config)
+
+    def open_types_dialog(self):
+        dialog = TypeManagementDialog(self.controller, self)
+        dialog.exec()
 
 
 class EditMenuDialog(QDialog):
@@ -2149,6 +2232,7 @@ class SearchDialog(QDialog):
         self.columns_info = columns_info
         self.search_condition = None
         self.search_params = []
+        self.parent_dialog = parent  # FIX: сохраняем TaskDialog
 
         self.setWindowTitle("Поиск")
         self.setMinimumWidth(500)
@@ -2156,14 +2240,11 @@ class SearchDialog(QDialog):
         self.center_on_screen()
 
     def center_on_screen(self):
-        """Центрирование диалога на экране."""
         screen = self.screen().geometry()
         self.move(screen.center() - self.rect().center())
 
     def setup_ui(self):
-        """Настройка UI."""
         layout = QVBoxLayout(self)
-
         layout.addWidget(QLabel("<h3>Поиск по таблице</h3>"))
 
         form_layout = QFormLayout()
@@ -2198,22 +2279,50 @@ class SearchDialog(QDialog):
         hint_label.setWordWrap(True)
         layout.addWidget(hint_label)
 
+        # NEW: SIMILAR TO блок
+        self.regex_group = QGroupBox("SIMILAR TO")
+        regex_layout = QVBoxLayout(self.regex_group)
+        self.regex_column_combo = QComboBox()
+        self.regex_pattern_edit = QLineEdit()
+        self.regex_pattern_edit.setPlaceholderText("Шаблон (например: (Р|Г)% )")
+        self.regex_not_checkbox = QCheckBox("NOT SIMILAR TO")
+
+        cols = [c['name'] for c in self.controller.get_table_columns(self.table_name)]
+        self.regex_column_combo.addItems(cols)
+        regex_layout.addWidget(QLabel("Столбец"))
+        regex_layout.addWidget(self.regex_column_combo)
+        regex_layout.addWidget(QLabel("Шаблон"))
+        regex_layout.addWidget(self.regex_pattern_edit)
+        regex_layout.addWidget(self.regex_not_checkbox)
+        layout.addWidget(self.regex_group)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept_dialog)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
     def accept_dialog(self):
-        """Формирование условия поиска с защитой от SQL Injection."""
+        """Формирование условия поиска (LIKE/регулярки/SIMILAR TO)."""
+        # Вариант 1: SIMILAR TO
+        pattern = self.regex_pattern_edit.text().strip()
+        if pattern:
+            col = self.regex_column_combo.currentText()
+            not_part = "NOT " if self.regex_not_checkbox.isChecked() else ""
+            if not (pattern.startswith("'") and pattern.endswith("'")):
+                pattern = f"'{pattern}'"
+            self.search_condition = f"{col} {not_part}SIMILAR TO {pattern}"
+            self.search_params = []
+            self.accept()
+            return
+
+        # Вариант 2: остальной поиск
         column = self.column_combo.currentText()
         search_text = self.search_text.text().strip()
-
         if not search_text:
-            QMessageBox.warning(self, "Ошибка", "Введите текст для поиска")
+            QMessageBox.warning(self, "Ошибка", "Введите текст для поиска или заполните блок SIMILAR TO")
             return
 
         search_type = self.search_type_combo.currentText()
-
         if "LIKE" in search_type:
             self.search_condition = f"{column} LIKE %s"
             self.search_params = [f"%{search_text}%"]
@@ -2234,6 +2343,448 @@ class SearchDialog(QDialog):
             self.search_params = [search_text]
 
         self.accept()
+
+
+class TypeManagementDialog(QDialog):
+    """
+    Диалог управления пользовательскими типами данных (ENUM и составные) с редактированием.
+    """
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Управление типами данных")
+        self.setMinimumWidth(760)
+        self.enum_values_edits = []
+        self.comp_columns = []
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        # --- TAB ENUM ---
+        enum_tab = QWidget()
+        enum_layout = QVBoxLayout(enum_tab)
+
+        # Создание
+        enum_layout.addWidget(QLabel("<b>Создание ENUM типа</b>"))
+        self.enum_name_edit = QLineEdit()
+        self.enum_name_edit.setPlaceholderText("Имя нового ENUM типа")
+        enum_layout.addWidget(self.enum_name_edit)
+
+        self.enum_values_container = QVBoxLayout()
+        enum_layout.addWidget(QLabel("Значения ENUM:"))
+        enum_layout.addLayout(self.enum_values_container)
+
+        add_value_btn = QPushButton("Добавить значение")
+        enum_layout.addWidget(add_value_btn)
+        add_value_btn.clicked.connect(self.add_enum_value_field)
+
+        create_enum_btn = QPushButton("Создать ENUM")
+        enum_layout.addWidget(create_enum_btn)
+        create_enum_btn.clicked.connect(self.create_enum_type)
+
+        enum_layout.addSpacing(8)
+        enum_layout.addWidget(QLabel("<b>Существующие ENUM типы</b>"))
+        self.enum_list = QListWidget()
+        enum_layout.addWidget(self.enum_list)
+
+        hl_enum_buttons = QHBoxLayout()
+        refresh_enum_btn = QPushButton("Обновить список")
+        drop_enum_btn = QPushButton("Удалить выбранный")
+        hl_enum_buttons.addWidget(refresh_enum_btn)
+        hl_enum_buttons.addWidget(drop_enum_btn)
+        enum_layout.addLayout(hl_enum_buttons)
+        refresh_enum_btn.clicked.connect(self.refresh_enums)
+        drop_enum_btn.clicked.connect(self.drop_selected_enum)
+
+        # Редактирование ENUM
+        enum_layout.addSpacing(10)
+        enum_layout.addWidget(QLabel("<b>Редактирование ENUM</b>"))
+
+        self.enum_edit_combo = QComboBox()
+        self.enum_edit_combo.setPlaceholderText("Выберите ENUM")
+        enum_layout.addWidget(self.enum_edit_combo)
+
+        # Просмотр значений выбранного ENUM
+        self.enum_values_list = QListWidget()
+        enum_layout.addWidget(self.enum_values_list)
+
+        hl_enum_actions = QHBoxLayout()
+        # Добавление значения
+        enum_add_grp = QGroupBox("Добавить значение")
+        enum_add_l = QFormLayout(enum_add_grp)
+        self.enum_add_value = QLineEdit()
+        self.enum_add_pos_combo = QComboBox()
+        self.enum_add_pos_combo.addItems(["В конец", "BEFORE", "AFTER"])
+        self.enum_add_ref_value = QLineEdit()
+        self.enum_add_ref_value.setPlaceholderText("Опорное значение (для BEFORE/AFTER)")
+        enum_add_l.addRow("Новое значение:", self.enum_add_value)
+        enum_add_l.addRow("Позиция:", self.enum_add_pos_combo)
+        enum_add_l.addRow("Опорное:", self.enum_add_ref_value)
+        enum_add_btn = QPushButton("Добавить")
+        enum_add_l.addRow(enum_add_btn)
+        enum_add_btn.clicked.connect(self.on_add_enum_value)
+
+        # Переименование значения
+        enum_ren_grp = QGroupBox("Переименовать значение")
+        enum_ren_l = QFormLayout(enum_ren_grp)
+        self.enum_old_value = QLineEdit()
+        self.enum_new_value = QLineEdit()
+        enum_ren_l.addRow("Старое значение:", self.enum_old_value)
+        enum_ren_l.addRow("Новое значение:", self.enum_new_value)
+        enum_ren_btn = QPushButton("Переименовать")
+        enum_ren_l.addRow(enum_ren_btn)
+        enum_ren_btn.clicked.connect(self.on_rename_enum_value)
+
+        hl_enum_actions.addWidget(enum_add_grp)
+        hl_enum_actions.addWidget(enum_ren_grp)
+        enum_layout.addLayout(hl_enum_actions)
+
+        tabs.addTab(enum_tab, "ENUM")
+
+        # --- TAB COMPOSITE ---
+        comp_tab = QWidget()
+        comp_layout = QVBoxLayout(comp_tab)
+
+        comp_layout.addWidget(QLabel("<b>Создание составного типа</b>"))
+        self.comp_name_edit = QLineEdit()
+        self.comp_name_edit.setPlaceholderText("Имя составного типа")
+        comp_layout.addWidget(self.comp_name_edit)
+
+        self.comp_columns_container = QVBoxLayout()
+        comp_layout.addWidget(QLabel("Столбцы составного типа:"))
+        comp_layout.addLayout(self.comp_columns_container)
+
+        add_col_btn = QPushButton("Добавить столбец")
+        comp_layout.addWidget(add_col_btn)
+        add_col_btn.clicked.connect(self.add_comp_column_field)
+
+        create_comp_btn = QPushButton("Создать составной тип")
+        comp_layout.addWidget(create_comp_btn)
+        create_comp_btn.clicked.connect(self.create_composite_type)
+
+        comp_layout.addSpacing(8)
+        comp_layout.addWidget(QLabel("<b>Существующие составные типы</b>"))
+        self.comp_list = QListWidget()
+        comp_layout.addWidget(self.comp_list)
+
+        hl_comp_buttons = QHBoxLayout()
+        refresh_comp_btn = QPushButton("Обновить список")
+        drop_comp_btn = QPushButton("Удалить выбранный")
+        hl_comp_buttons.addWidget(refresh_comp_btn)
+        hl_comp_buttons.addWidget(drop_comp_btn)
+        comp_layout.addLayout(hl_comp_buttons)
+        refresh_comp_btn.clicked.connect(self.refresh_composites)
+        drop_comp_btn.clicked.connect(self.drop_selected_composite)
+
+        # Редактирование составного типа
+        comp_layout.addSpacing(10)
+        comp_layout.addWidget(QLabel("<b>Редактирование составного типа</b>"))
+        self.comp_edit_combo = QComboBox()
+        self.comp_edit_combo.setPlaceholderText("Выберите тип")
+        comp_layout.addWidget(self.comp_edit_combo)
+
+        self.comp_attrs_list = QListWidget()
+        comp_layout.addWidget(self.comp_attrs_list)
+
+        # Группа действий
+        comp_actions_layout = QHBoxLayout()
+
+        # Добавить атрибут
+        comp_add_grp = QGroupBox("Добавить атрибут")
+        comp_add_l = QFormLayout(comp_add_grp)
+        self.comp_add_attr_name = QLineEdit()
+        self.comp_add_attr_type = QLineEdit()
+        self.comp_add_attr_type.setPlaceholderText("INTEGER | TEXT | my_enum | ...")
+        comp_add_l.addRow("Имя:", self.comp_add_attr_name)
+        comp_add_l.addRow("Тип:", self.comp_add_attr_type)
+        comp_add_btn = QPushButton("Добавить")
+        comp_add_l.addRow(comp_add_btn)
+        comp_add_btn.clicked.connect(self.on_comp_add_attr)
+
+        # Удалить атрибут
+        comp_del_grp = QGroupBox("Удалить атрибут")
+        comp_del_l = QFormLayout(comp_del_grp)
+        self.comp_del_attr_name = QLineEdit()
+        comp_del_l.addRow("Имя:", self.comp_del_attr_name)
+        comp_del_btn = QPushButton("Удалить")
+        comp_del_l.addRow(comp_del_btn)
+        comp_del_btn.clicked.connect(self.on_comp_del_attr)
+
+        # Переименовать атрибут
+        comp_ren_grp = QGroupBox("Переименовать атрибут")
+        comp_ren_l = QFormLayout(comp_ren_grp)
+        self.comp_ren_old = QLineEdit()
+        self.comp_ren_new = QLineEdit()
+        comp_ren_l.addRow("Старое имя:", self.comp_ren_old)
+        comp_ren_l.addRow("Новое имя:", self.comp_ren_new)
+        comp_ren_btn = QPushButton("Переименовать")
+        comp_ren_l.addRow(comp_ren_btn)
+        comp_ren_btn.clicked.connect(self.on_comp_rename_attr)
+
+        # Изменить тип атрибута
+        comp_alt_grp = QGroupBox("Изменить тип атрибута")
+        comp_alt_l = QFormLayout(comp_alt_grp)
+        self.comp_alt_name = QLineEdit()
+        self.comp_alt_new_type = QLineEdit()
+        comp_alt_l.addRow("Атрибут:", self.comp_alt_name)
+        comp_alt_l.addRow("Новый тип:", self.comp_alt_new_type)
+        comp_alt_btn = QPushButton("Изменить тип")
+        comp_alt_l.addRow(comp_alt_btn)
+        comp_alt_btn.clicked.connect(self.on_comp_alter_attr_type)
+
+        comp_actions_layout.addWidget(comp_add_grp)
+        comp_actions_layout.addWidget(comp_del_grp)
+        comp_actions_layout.addWidget(comp_ren_grp)
+        comp_actions_layout.addWidget(comp_alt_grp)
+
+        comp_layout.addLayout(comp_actions_layout)
+
+        tabs.addTab(comp_tab, "Составные")
+
+        # Инициализация списков
+        self.refresh_enums()
+        self.refresh_composites()
+
+        # Связи
+        self.enum_edit_combo.currentTextChanged.connect(self.refresh_enum_values)
+        self.comp_edit_combo.currentTextChanged.connect(self.refresh_comp_attributes)
+
+        close_btn = QPushButton("Закрыть")
+        layout.addWidget(close_btn)
+        close_btn.clicked.connect(self.accept)
+
+    # ===== ENUM =====
+    def add_enum_value_field(self):
+        le = QLineEdit()
+        le.setPlaceholderText("Значение ENUM")
+        self.enum_values_container.addWidget(le)
+        self.enum_values_edits.append(le)
+
+    def create_enum_type(self):
+        name = self.enum_name_edit.text().strip()
+        values = [e.text().strip() for e in self.enum_values_edits if e.text().strip()]
+        if not name or not values:
+            QMessageBox.warning(self, "Ошибка", "Укажите имя и хотя бы одно значение.")
+            return
+        ok, msg = self.controller.create_enum_type(name, values)
+        if ok:
+            QMessageBox.information(self, "Успех", f"ENUM {name} создан.")
+            self.enum_name_edit.clear()
+            for e in self.enum_values_edits:
+                e.deleteLater()
+            self.enum_values_edits.clear()
+            self.refresh_enums()
+        else:
+            QMessageBox.critical(self, "Ошибка", msg)
+
+    def refresh_enums(self):
+        self.enum_list.clear()
+        enums = self.controller.list_enum_types()
+        for t in enums:
+            self.enum_list.addItem(t)
+        # заполняем combo для редактирования
+        self.enum_edit_combo.clear()
+        self.enum_edit_combo.addItems(enums)
+        # обновляем список значений
+        if enums:
+            self.refresh_enum_values(enums[0])
+        else:
+            self.enum_values_list.clear()
+
+    def drop_selected_enum(self):
+        item = self.enum_list.currentItem()
+        if not item:
+            return
+        name = item.text()
+        if QMessageBox.question(self, "Удалить", f"Удалить ENUM {name}?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            ok, msg = self.controller.drop_type(name)
+            if ok:
+                self.refresh_enums()
+            else:
+                QMessageBox.critical(self, "Ошибка", msg)
+
+    def refresh_enum_values(self, type_name):
+        if not type_name:
+            self.enum_values_list.clear()
+            return
+        vals = self.controller.list_enum_values(type_name)
+        self.enum_values_list.clear()
+        for v in vals:
+            self.enum_values_list.addItem(v)
+
+    def on_add_enum_value(self):
+        t = self.enum_edit_combo.currentText()
+        if not t:
+            QMessageBox.warning(self, "Ошибка", "Выберите ENUM тип.")
+            return
+        val = self.enum_add_value.text().strip()
+        if not val:
+            QMessageBox.warning(self, "Ошибка", "Введите новое значение.")
+            return
+        pos = self.enum_add_pos_combo.currentText()
+        ref = self.enum_add_ref_value.text().strip() if pos in ("BEFORE", "AFTER") else None
+        ok, msg = self.controller.add_enum_value(t, val, pos if pos in ("BEFORE", "AFTER") else None, ref)
+        if ok:
+            QMessageBox.information(self, "Успех", "Значение добавлено.")
+            self.enum_add_value.clear()
+            self.enum_add_ref_value.clear()
+            self.refresh_enum_values(t)
+        else:
+            QMessageBox.critical(self, "Ошибка", msg)
+
+    def on_rename_enum_value(self):
+        t = self.enum_edit_combo.currentText()
+        if not t:
+            QMessageBox.warning(self, "Ошибка", "Выберите ENUM тип.")
+            return
+        old_v = self.enum_old_value.text().strip()
+        new_v = self.enum_new_value.text().strip()
+        if not old_v or not new_v:
+            QMessageBox.warning(self, "Ошибка", "Укажите старое и новое значения.")
+            return
+        ok, msg = self.controller.rename_enum_value(t, old_v, new_v)
+        if ok:
+            QMessageBox.information(self, "Успех", "Значение переименовано.")
+            self.enum_old_value.clear()
+            self.enum_new_value.clear()
+            self.refresh_enum_values(t)
+        else:
+            QMessageBox.critical(self, "Ошибка", msg)
+
+    # ===== Composite types =====
+    def add_comp_column_field(self):
+        h = QHBoxLayout()
+        col_name = QLineEdit()
+        col_name.setPlaceholderText("Имя")
+        col_type = QLineEdit()
+        col_type.setPlaceholderText("Тип данных (например INTEGER, TEXT, my_enum)")
+        h.addWidget(col_name)
+        h.addWidget(col_type)
+        self.comp_columns_container.addLayout(h)
+        self.comp_columns.append((col_name, col_type))
+
+    def create_composite_type(self):
+        name = self.comp_name_edit.text().strip()
+        cols = []
+        for n_edit, t_edit in self.comp_columns:
+            n = n_edit.text().strip()
+            t = t_edit.text().strip()
+            if n and t:
+                cols.append((n, t))
+        if not name or not cols:
+            QMessageBox.warning(self, "Ошибка", "Укажите имя и минимум один столбец.")
+            return
+        ok, msg = self.controller.create_composite_type(name, cols)
+        if ok:
+            QMessageBox.information(self, "Успех", f"Составной тип {name} создан.")
+            self.comp_name_edit.clear()
+            for n_edit, t_edit in self.comp_columns:
+                n_edit.deleteLater()
+                t_edit.deleteLater()
+            self.comp_columns.clear()
+            self.refresh_composites()
+        else:
+            QMessageBox.critical(self, "Ошибка", msg)
+
+    def refresh_composites(self):
+        self.comp_list.clear()
+        composites = self.controller.list_composite_types()
+        for t in composites:
+            self.comp_list.addItem(t)
+        self.comp_edit_combo.clear()
+        self.comp_edit_combo.addItems(composites)
+        if composites:
+            self.refresh_comp_attributes(composites[0])
+        else:
+            self.comp_attrs_list.clear()
+
+    def drop_selected_composite(self):
+        item = self.comp_list.currentItem()
+        if not item:
+            return
+        name = item.text()
+        if QMessageBox.question(self, "Удалить", f"Удалить составной тип {name}?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            ok, msg = self.controller.drop_type(name)
+            if ok:
+                self.refresh_composites()
+            else:
+                QMessageBox.critical(self, "Ошибка", msg)
+
+    def refresh_comp_attributes(self, type_name):
+        self.comp_attrs_list.clear()
+        if not type_name:
+            return
+        attrs = self.controller.list_composite_attributes(type_name)
+        for a_name, a_typ in attrs:
+            self.comp_attrs_list.addItem(f"{a_name}: {a_typ}")
+
+    def on_comp_add_attr(self):
+        t = self.comp_edit_combo.currentText()
+        if not t:
+            QMessageBox.warning(self, "Ошибка", "Выберите составной тип.")
+            return
+        name = self.comp_add_attr_name.text().strip()
+        typ = self.comp_add_attr_type.text().strip()
+        if not name or not typ:
+            QMessageBox.warning(self, "Ошибка", "Введите имя и тип.")
+            return
+        ok, msg = self.controller.composite_add_attribute(t, name, typ)
+        if ok:
+            QMessageBox.information(self, "Успех", "Атрибут добавлен.")
+            self.comp_add_attr_name.clear()
+            self.comp_add_attr_type.clear()
+            self.refresh_comp_attributes(t)
+        else:
+            QMessageBox.critical(self, "Ошибка", msg)
+
+    def on_comp_del_attr(self):
+        t = self.comp_edit_combo.currentText()
+        name = self.comp_del_attr_name.text().strip()
+        if not t or not name:
+            QMessageBox.warning(self, "Ошибка", "Выберите тип и укажите имя атрибута.")
+            return
+        ok, msg = self.controller.composite_drop_attribute(t, name)
+        if ok:
+            QMessageBox.information(self, "Успех", "Атрибут удалён.")
+            self.comp_del_attr_name.clear()
+            self.refresh_comp_attributes(t)
+        else:
+            QMessageBox.critical(self, "Ошибка", msg)
+
+    def on_comp_rename_attr(self):
+        t = self.comp_edit_combo.currentText()
+        old = self.comp_ren_old.text().strip()
+        new = self.comp_ren_new.text().strip()
+        if not t or not old or not new:
+            QMessageBox.warning(self, "Ошибка", "Заполните поля.")
+            return
+        ok, msg = self.controller.composite_rename_attribute(t, old, new)
+        if ok:
+            QMessageBox.information(self, "Успех", "Атрибут переименован.")
+            self.comp_ren_old.clear()
+            self.comp_ren_new.clear()
+            self.refresh_comp_attributes(t)
+        else:
+            QMessageBox.critical(self, "Ошибка", msg)
+
+    def on_comp_alter_attr_type(self):
+        t = self.comp_edit_combo.currentText()
+        name = self.comp_alt_name.text().strip()
+        new_t = self.comp_alt_new_type.text().strip()
+        if not t or not name or not new_t:
+            QMessageBox.warning(self, "Ошибка", "Заполните поля.")
+            return
+        ok, msg = self.controller.composite_alter_attribute_type(t, name, new_t)
+        if ok:
+            QMessageBox.information(self, "Успех", "Тип атрибута изменён.")
+            self.comp_alt_name.clear()
+            self.comp_alt_new_type.clear()
+            self.refresh_comp_attributes(t)
+        else:
+            QMessageBox.critical(self, "Ошибка", msg)
 
 
 class DisplayOptionsDialog(QDialog):
@@ -3137,6 +3688,14 @@ class ColumnActionsDialog(QDialog):
         group_btn.clicked.connect(self.open_group)
         layout.addWidget(group_btn)
 
+        self.subquery_btn = QPushButton("Подзапросы")
+        self.subquery_btn.clicked.connect(self.open_subquery_builder)
+        layout.addWidget(self.subquery_btn)
+
+        self.case_expr_btn = QPushButton("Выражения CASE")
+        self.case_expr_btn.clicked.connect(self.open_case_builder)
+        layout.addWidget(self.case_expr_btn)
+
         layout.addStretch()
 
         close_btn = QPushButton("Закрыть")
@@ -3172,6 +3731,21 @@ class ColumnActionsDialog(QDialog):
 
             if dlg.having_clause and hasattr(self.task_dialog, "add_having_clause"):
                 self.task_dialog.add_having_clause(dlg.having_clause)
+
+    def open_subquery_builder(self):
+        dlg = SubqueryDialog(self.controller, self.table_name, self)
+        if dlg.exec():
+            clause = dlg.get_clause()
+            if clause:
+                self.task_dialog.add_where_clause(clause)
+
+    def open_case_builder(self):
+        dlg = CaseExpressionDialog(self.controller, self.table_name, self)
+        if dlg.exec():
+            expr = dlg.get_case_expression()
+            if expr:
+                self.task_dialog.add_select_expression(expr)
+                self.task_dialog.refresh_with_current_clauses()
 
 
 class SortDialog(QDialog):
@@ -3426,3 +4000,267 @@ class GroupDialog(QDialog):
             self.having_clause = None
 
         self.accept()
+
+
+class SubqueryDialog(QDialog):
+    """
+    Диалог построения условий с подзапросами (ANY / ALL / EXISTS), поддержка корреляции.
+    """
+    def __init__(self, controller, outer_table, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.outer_table = outer_table
+        self.setWindowTitle("Конструктор подзапроса")
+        self.setMinimumWidth(500)
+        self.clause = ""
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["EXISTS", "ANY", "ALL"])
+        layout.addWidget(QLabel("Оператор:"))
+        layout.addWidget(self.mode_combo)
+
+        self.outer_col_combo = QComboBox()
+        outer_cols = [c['name'] for c in self.controller.get_table_columns(self.outer_table)]
+        self.outer_col_combo.addItems(outer_cols)
+        layout.addWidget(QLabel("Внешний столбец (для ANY/ALL):"))
+        layout.addWidget(self.outer_col_combo)
+
+        self.comp_op_combo = QComboBox()
+        self.comp_op_combo.addItems(["=", "!=", ">", "<", ">=", "<="])
+        layout.addWidget(QLabel("Оператор сравнения (для ANY/ALL):"))
+        layout.addWidget(self.comp_op_combo)
+
+        self.sub_table_combo = QComboBox()
+        all_tables = self.controller.get_all_tables()
+        # Можно разрешить также основные таблицы:
+        all_tables += ['actors', 'plots', 'performances', 'actor_performances', 'game_data']
+        uniq = sorted(set(all_tables))
+        self.sub_table_combo.addItems(uniq)
+        layout.addWidget(QLabel("Таблица подзапроса:"))
+        layout.addWidget(self.sub_table_combo)
+
+        self.sub_col_combo = QComboBox()
+        layout.addWidget(QLabel("Столбец подзапроса для выборки:"))
+        layout.addWidget(self.sub_col_combo)
+
+        self.where_outer_combo = QComboBox()
+        self.where_sub_combo = QComboBox()
+        layout.addWidget(QLabel("Корреляция (сопоставление внешнего и внутреннего столбца):"))
+        corr_layout = QHBoxLayout()
+        corr_layout.addWidget(self.where_outer_combo)
+        corr_layout.addWidget(QLabel("="))
+        corr_layout.addWidget(self.where_sub_combo)
+        layout.addLayout(corr_layout)
+
+        self.filter_value_edit = QLineEdit()
+        self.filter_value_edit.setPlaceholderText("Доп. значение для внутреннего WHERE (опционально)")
+        layout.addWidget(self.filter_value_edit)
+
+        self.mode_combo.currentTextChanged.connect(self._toggle_visibility)
+        self.sub_table_combo.currentTextChanged.connect(self._reload_sub_columns)
+
+        self._reload_sub_columns()
+        self._toggle_visibility(self.mode_combo.currentText())
+
+        btn_layout = QHBoxLayout()
+        build_btn = QPushButton("Добавить условие")
+        cancel_btn = QPushButton("Отмена")
+        btn_layout.addWidget(build_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        build_btn.clicked.connect(self.build_clause)
+        cancel_btn.clicked.connect(self.reject)
+
+    def _reload_sub_columns(self):
+        table = self.sub_table_combo.currentText()
+        cols = [c['name'] for c in self.controller.get_table_columns(table)]
+        self.sub_col_combo.clear()
+        self.sub_col_combo.addItems(cols)
+        self.where_outer_combo.clear()
+        outer_cols = [c['name'] for c in self.controller.get_table_columns(self.outer_table)]
+        self.where_outer_combo.addItems(outer_cols)
+        self.where_sub_combo.clear()
+        self.where_sub_combo.addItems(cols)
+
+    def _toggle_visibility(self, mode):
+        is_exists = mode == "EXISTS"
+        self.outer_col_combo.setEnabled(not is_exists)
+        self.comp_op_combo.setEnabled(not is_exists)
+        self.sub_col_combo.setEnabled(not is_exists)  # для EXISTS можно не выбирать конкретный столбец (SELECT 1)
+        # но оставим доступным — можно выбрать столбец (SELECT sub_col)
+
+    def build_clause(self):
+        mode = self.mode_combo.currentText()
+        sub_table = self.sub_table_combo.currentText()
+        sub_col = self.sub_col_combo.currentText()
+        corr_outer = self.where_outer_combo.currentText()
+        corr_inner = self.where_sub_combo.currentText()
+        extra_val = self.filter_value_edit.text().strip()
+
+        if mode == "EXISTS":
+            # SELECT 1 FROM sub_table WHERE sub_table.corr_inner = outer_table.corr_outer [AND ...]
+            where_parts = [f"{sub_table}.{corr_inner} = {self.outer_table}.{corr_outer}"]
+            if extra_val:
+                # простая эвристика — если число, не берем кавычки
+                if extra_val.isdigit():
+                    where_parts.append(f"{sub_table}.{corr_inner} = {extra_val}")
+                else:
+                    where_parts.append(f"{sub_table}.{corr_inner} = '{extra_val}'")
+            where_clause = " AND ".join(where_parts)
+            self.clause = f"EXISTS (SELECT 1 FROM {sub_table} WHERE {where_clause})"
+
+        else:
+            outer_col = self.outer_col_combo.currentText()
+            comp = self.comp_op_combo.currentText()
+            # ANY/ALL (SELECT sub_col FROM sub_table WHERE correlation ...)
+            where_parts = [f"{sub_table}.{corr_inner} = {self.outer_table}.{corr_outer}"]
+            if extra_val:
+                if extra_val.isdigit():
+                    where_parts.append(f"{sub_table}.{corr_inner} = {extra_val}")
+                else:
+                    where_parts.append(f"{sub_table}.{corr_inner} = '{extra_val}'")
+            where_clause = " AND ".join(where_parts)
+            self.clause = (
+                f"{self.outer_table}.{outer_col} {comp} {mode} "
+                f"(SELECT {sub_col} FROM {sub_table} WHERE {where_clause})"
+            )
+
+        self.accept()
+
+    def get_clause(self):
+        return self.clause
+
+
+class CaseExpressionDialog(QDialog):
+    """
+    Диалог для построения CASE выражений + COALESCE / NULLIF.
+    """
+    def __init__(self, controller, table_name, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.table_name = table_name
+        self.setWindowTitle("Конструктор CASE")
+        self.setMinimumWidth(600)
+        self.when_rows = []
+        self.case_alias_edit = None
+        self.else_edit = None
+        self.coalesce_value_edit = None
+        self.nullif_first_edit = None
+        self.nullif_second_edit = None
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("Условия WHEN ... THEN ..."))
+        self.when_container = QVBoxLayout()
+        layout.addLayout(self.when_container)
+
+        add_when_btn = QPushButton("Добавить WHEN")
+        layout.addWidget(add_when_btn)
+        add_when_btn.clicked.connect(self.add_when_row)
+
+        layout.addWidget(QLabel("Значение ELSE (опционально):"))
+        self.else_edit = QLineEdit()
+        layout.addWidget(self.else_edit)
+
+        layout.addWidget(QLabel("Алиас (имя нового столбца):"))
+        self.case_alias_edit = QLineEdit()
+        layout.addWidget(self.case_alias_edit)
+
+        # NULL handling
+        layout.addWidget(QLabel("COALESCE значение (подставить вместо NULL, опционально):"))
+        self.coalesce_value_edit = QLineEdit()
+        layout.addWidget(self.coalesce_value_edit)
+
+        layout.addWidget(QLabel("NULLIF (значения для сравнения, если равны -> NULL):"))
+        nullif_layout = QHBoxLayout()
+        self.nullif_first_edit = QLineEdit()
+        self.nullif_first_edit.setPlaceholderText("expr1")
+        self.nullif_second_edit = QLineEdit()
+        self.nullif_second_edit.setPlaceholderText("expr2")
+        nullif_layout.addWidget(self.nullif_first_edit)
+        nullif_layout.addWidget(self.nullif_second_edit)
+        layout.addLayout(nullif_layout)
+
+        btn_layout = QHBoxLayout()
+        build_btn = QPushButton("Добавить выражение")
+        cancel_btn = QPushButton("Отмена")
+        btn_layout.addWidget(build_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        build_btn.clicked.connect(self.build_expression)
+        cancel_btn.clicked.connect(self.reject)
+
+        self.add_when_row()
+
+    def add_when_row(self):
+        row_layout = QHBoxLayout()
+        cols_info = self.controller.get_table_columns(self.table_name)
+        col_combo = QComboBox()
+        col_combo.addItems([c['name'] for c in cols_info])
+        op_combo = QComboBox()
+        op_combo.addItems(["=", "!=", ">", "<", ">=", "<=", "IS NULL", "IS NOT NULL"])
+        value_edit = QLineEdit()
+        value_edit.setPlaceholderText("Значение (для IS NULL не требуется)")
+
+        row_layout.addWidget(col_combo)
+        row_layout.addWidget(op_combo)
+        row_layout.addWidget(value_edit)
+        self.when_container.addLayout(row_layout)
+        self.when_rows.append((col_combo, op_combo, value_edit))
+
+    def _quote_if_needed(self, val: str):
+        if not val:
+            return "''"
+        if val.isdigit():
+            return val
+        # Простая проверка на уже заключённые кавычки
+        if (val.startswith("'") and val.endswith("'")) or (val.startswith('"') and val.endswith('"')):
+            return val
+        return f"'{val}'"
+
+    def build_expression(self):
+        parts = ["CASE"]
+        for col_combo, op_combo, val_edit in self.when_rows:
+            col = col_combo.currentText()
+            op = op_combo.currentText()
+            raw_val = val_edit.text().strip()
+            if op in ("IS NULL", "IS NOT NULL"):
+                parts.append(f"WHEN {self.table_name}.{col} {op} THEN {self._quote_if_needed(raw_val) if raw_val else 'NULL'}")
+            else:
+                qv = self._quote_if_needed(raw_val)
+                parts.append(f"WHEN {self.table_name}.{col} {op} {qv} THEN {qv}")
+        else_val = self.else_edit.text().strip()
+        if else_val:
+            parts.append(f"ELSE {self._quote_if_needed(else_val)}")
+        parts.append("END")
+
+        expr = " ".join(parts)
+
+        # NULLIF
+        n1 = self.nullif_first_edit.text().strip()
+        n2 = self.nullif_second_edit.text().strip()
+        if n1 and n2:
+            expr = f"NULLIF({expr}, {self._quote_if_needed(n2)})"
+
+        # COALESCE
+        coalesce_val = self.coalesce_value_edit.text().strip()
+        if coalesce_val:
+            expr = f"COALESCE({expr}, {self._quote_if_needed(coalesce_val)})"
+
+        alias = self.case_alias_edit.text().strip()
+        if alias:
+            expr = f"{expr} AS {alias}"
+
+        self.final_expr = expr
+        self.accept()
+
+    def get_case_expression(self):
+        return getattr(self, 'final_expr', None)
