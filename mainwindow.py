@@ -14,7 +14,7 @@ from new_performance_d import NewPerformanceDialog
 from performance_d import PerformanceHistoryDialog, PerformanceDetailsDialog
 from plot_d import PlotManagementDialog
 from actor_d import ActorsManagementDialog
-from task_d import TaskDialog
+from dialogs.task_dialog import TaskDialog  # UPDATED IMPORT
 
 
 class MainWindow(QMainWindow):
@@ -380,7 +380,7 @@ class MainWindow(QMainWindow):
                 self.update_game_info()
             else:
                 QMessageBox.critical(self, "Ошибка",
-                                     "Не удалось обновить схему базы данных. Проверьте логи для получения подробной информации.")
+                                     "Не удалось обновить схему базы данных. Проверьте логи для получения подробной информаци[...]")
 
     def open_new_show_dialog(self):
         """Открытие диалога создания новой постановки."""
@@ -440,7 +440,7 @@ class MainWindow(QMainWindow):
             result = QMessageBox.question(
                 self,
                 "Пропустить год",
-                "Вы уверены, что хотите пропустить год? Театр продаст права на постановку другому театру и получит случайный доход.",
+                "Вы уверены, что хотите пропустить год? Театр продаст права на постановку другому театру и получит сл[...]",
                 QMessageBox.Yes | QMessageBox.No
             )
 

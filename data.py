@@ -1118,7 +1118,15 @@ class DatabaseManager:
             list: Результаты запроса
         """
         try:
-            cols = ', '.join(columns) if columns else '*'
+            # Обработка списка столбцов (может содержать выражения с пробелами)
+            if columns:
+                # Если это список, объединяем через запятую
+                if isinstance(columns, list):
+                    cols = ', '.join(columns)
+                else:
+                    cols = columns
+            else:
+                cols = '*'
 
             table_identifier = sql.Identifier(table_name)
             query = f"SELECT {cols} FROM {table_identifier.as_string(self.cursor)}"
