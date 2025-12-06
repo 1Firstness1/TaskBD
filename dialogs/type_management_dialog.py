@@ -20,6 +20,7 @@ class TypeManagementDialog(QDialog):
         self.setWindowTitle("Типы данных")
         self.setMinimumWidth(820)
         self.setMinimumHeight(540)
+        self.resize(1000, 680)
         self.setup_ui()
         self.refresh_types()
 

@@ -5,9 +5,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QDate, QTime
 from controller import ValidatedLineEdit
 from datetime import datetime, date
+from psycopg2.extensions import AsIs
 
 class EditRecordDialog(QDialog):
-    """Диалог редактирования записи с поддержкой составных типов."""
+    """Диалог редактирования записи с корректной поддержкой ENUM и составных типов."""
     def __init__(self, controller, table_name, columns_info, current_data, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -25,26 +26,29 @@ class EditRecordDialog(QDialog):
         screen = self.screen().geometry()
         self.move(screen.center() - self.rect().center())
 
-    @staticmethod
-    def _is_composite_type(col_type: str) -> bool:
-        t = col_type.lower()
-        base_keywords = [
-            "int", "serial", "numeric", "decimal", "real", "double",
-            "bool", "char", "text", "date", "time", "timestamp",
-            "json", "jsonb", "uuid", "array", "[]"
-        ]
-        return not any(k in t for k in base_keywords)
+    # Определение пользовательских типов через udt_name
+    def _is_enum_type(self, data_type: str, udt_name: str) -> bool:
+        try:
+            return (data_type.lower() == 'user-defined' and udt_name in self.controller.list_enum_types()) \
+                   or (udt_name in self.controller.list_enum_types())
+        except Exception:
+            return False
+
+    def _is_composite_type(self, data_type: str, udt_name: str) -> bool:
+        try:
+            return (data_type.lower() == 'user-defined' and udt_name in self.controller.list_composite_types()) \
+                   or (udt_name in self.controller.list_composite_types())
+        except Exception:
+            return False
 
     def _get_composite_attributes(self, type_name: str):
         try:
             return self.controller.list_composite_attributes(type_name)
         except Exception:
             return []
-    
-    def _get_existing_composite_values(self, col_name: str, type_name: str):
-        """Получает существующие значения составного типа из таблицы."""
+
+    def _get_existing_composite_values(self, col_name: str):
         try:
-            # Получаем все уникальные значения этого столбца
             query = f'SELECT DISTINCT "{col_name}" FROM "{self.table_name}" WHERE "{col_name}" IS NOT NULL'
             results = self.controller.execute_select(query)
             values = []
@@ -53,17 +57,8 @@ class EditRecordDialog(QDialog):
                 if val is not None:
                     values.append(str(val))
             return values
-        except Exception as e:
-            return []
-    
-    def _is_enum_type(self, col_type: str) -> bool:
-        """Проверяет, является ли тип ENUM."""
-        # Проверяем, есть ли этот тип в списке ENUM типов
-        try:
-            enum_types = self.controller.list_enum_types()
-            return col_type in enum_types
         except Exception:
-            return False
+            return []
 
     def setup_ui(self):
         layout = QFormLayout(self)
@@ -73,8 +68,8 @@ class EditRecordDialog(QDialog):
 
         for col in self.columns_info:
             col_name = col['name']
-            col_type = col.get('type', '')
-            col_type_lower = col_type.lower()
+            data_type = (col.get('type') or '').lower()
+            udt_name = col.get('udt_name') or ''
             is_nullable = col.get('nullable', True)
 
             label = QLabel(f"{col_name}:")
@@ -82,14 +77,65 @@ class EditRecordDialog(QDialog):
             if not is_nullable:
                 label.setText(f"{col_name} *")
 
-            if self._is_composite_type(col_type):
-                group = QGroupBox(f"{col_name} ({col_type})")
+            # ENUM → всегда QComboBox со значениями
+            if self._is_enum_type(data_type, udt_name):
+                w = QComboBox()
+                try:
+                    enum_values = self.controller.list_enum_values(udt_name)
+                    w.addItems(enum_values)
+                    w.setStyleSheet("""
+                        QComboBox {
+                            background-color: white;
+                            color: #333333;
+                            border: 1px solid #c0c0c0;
+                            padding: 4px;
+                            min-width: 120px;
+                            border-radius: 4px;
+                        }
+                        QComboBox:focus {
+                            border: 1px solid #4a86e8;
+                        }
+                        QComboBox::drop-down {
+                            border: none;
+                            width: 20px;
+                        }
+                    """)
+                except Exception:
+                    w = ValidatedLineEdit(self.controller)
+
+                current_val = self.current_data.get(col_name)
+                if current_val:
+                    idx = w.findText(str(current_val)) if isinstance(w, QComboBox) else -1
+                    if isinstance(w, QComboBox):
+                        if idx >= 0:
+                            w.setCurrentIndex(idx)
+                        else:
+                            w.addItem(str(current_val))
+                            w.setCurrentIndex(w.count() - 1)
+                    else:
+                        w.setText(str(current_val))
+
+                self.field_widgets[col_name] = w
+
+                if col_name == first_col_name:
+                    if isinstance(w, QComboBox):
+                        w.setEnabled(False)
+                        w.setStyleSheet(w.styleSheet() + " QComboBox { background-color: #f0f0f0; }")
+                    elif hasattr(w, 'setReadOnly'):
+                        w.setReadOnly(True)
+                        w.setStyleSheet("background-color: #f0f0f0;")
+
+                layout.addRow(label, w)
+                continue
+
+            # COMPOSITE → список существующих + форма нового значения
+            if self._is_composite_type(data_type, udt_name):
+                group = QGroupBox(f"{col_name} ({udt_name})")
                 group_layout = QFormLayout(group)
 
-                attrs = self._get_composite_attributes(col_type)
+                attrs = self._get_composite_attributes(udt_name)
                 raw_value = self.current_data.get(col_name)
-                
-                # Выпадающий список с существующими значениями
+
                 value_combo = QComboBox()
                 value_combo.setStyleSheet("""
                     QComboBox {
@@ -104,30 +150,25 @@ class EditRecordDialog(QDialog):
                         border: 1px solid #4a86e8;
                     }
                 """)
-                
-                # Получаем существующие значения
-                existing_values = self._get_existing_composite_values(col_name, col_type)
+                existing_values = self._get_existing_composite_values(col_name)
                 value_combo.addItem("-- Выберите значение --", None)
                 for val in existing_values:
                     value_combo.addItem(val, val)
                 value_combo.addItem("-- Создать новое значение --", "__new__")
-                
-                # Устанавливаем текущее значение, если оно есть
+
                 if raw_value:
                     val_str = str(raw_value)
                     index = value_combo.findData(val_str)
                     if index >= 0:
                         value_combo.setCurrentIndex(index)
                     else:
-                        # Если значение не найдено в списке, добавляем его
                         value_combo.insertItem(1, val_str, val_str)
                         value_combo.setCurrentIndex(1)
-                
-                # Форма для создания нового значения
+
                 new_value_group = QGroupBox("Новое значение")
                 new_value_group.setVisible(False)
                 new_value_layout = QFormLayout(new_value_group)
-                
+
                 attr_widgets = {}
                 if attrs:
                     for attr_name, attr_type in attrs:
@@ -141,13 +182,11 @@ class EditRecordDialog(QDialog):
                     w.setPlaceholderText("Значение составного типа (RAW)")
                     attr_widgets["__raw__"] = w
                     new_value_layout.addRow(QLabel("Значение:"), w)
-                
-                # Обработчик изменения выбора
+
                 def on_combo_changed(index):
                     data = value_combo.itemData(index)
                     if data == "__new__":
                         new_value_group.setVisible(True)
-                        # Очищаем поля
                         for w in attr_widgets.values():
                             if hasattr(w, 'clear'):
                                 w.clear()
@@ -155,48 +194,50 @@ class EditRecordDialog(QDialog):
                                 w.setText('')
                     else:
                         new_value_group.setVisible(False)
-                
+
                 value_combo.currentIndexChanged.connect(on_combo_changed)
-                
                 group_layout.addRow(QLabel("Выберите значение:"), value_combo)
                 group_layout.addRow(new_value_group)
 
                 self.field_widgets[col_name] = {
-                    "type_name": col_type,
+                    "type_name": udt_name,
                     "attrs": attrs,
                     "widgets": attr_widgets,
                     "value_combo": value_combo,
                     "new_value_group": new_value_group
                 }
 
-                # Если текущее значение не в списке, показываем форму для редактирования
                 if raw_value:
                     val_str = str(raw_value)
                     if val_str not in existing_values:
                         value_combo.setCurrentIndex(value_combo.count() - 1)  # "Создать новое значение"
-                        self._set_composite_widget_value(col_type, attr_widgets, attrs, raw_value)
+                        new_value_group.setVisible(True)
+                        self._set_composite_widget_value(udt_name, attr_widgets, attrs, raw_value)
 
                 if col_name == first_col_name:
                     group.setEnabled(False)
 
                 layout.addRow(label, group)
-            else:
-                widget = self.create_widget_for_type(col_type_lower, col)
-                self.field_widgets[col_name] = widget
+                continue
 
-                if col_name in self.current_data:
-                    self.set_widget_value(widget, self.current_data[col_name], col_type)
+            # Базовые типы (вернули прежние стили)
+            widget = self.create_widget_for_type(data_type, col)
+            self.field_widgets[col_name] = widget
 
-                if col_name == first_col_name:
-                    if hasattr(widget, 'setReadOnly'):
-                        widget.setReadOnly(True)
-                        widget.setStyleSheet("background-color: #f0f0f0;")
-                    elif hasattr(widget, 'setEnabled'):
-                        widget.setEnabled(False)
-                        widget.setStyleSheet("background-color: #f0f0f0;")
+            if col_name in self.current_data:
+                self.set_widget_value(widget, self.current_data[col_name], data_type)
 
-                layout.addRow(label, widget)
+            if col_name == first_col_name:
+                if hasattr(widget, 'setReadOnly'):
+                    widget.setReadOnly(True)
+                    widget.setStyleSheet("background-color: #f0f0f0;")
+                elif hasattr(widget, 'setEnabled'):
+                    widget.setEnabled(False)
+                    widget.setStyleSheet("background-color: #f0f0f0;")
 
+            layout.addRow(label, widget)
+
+        # Кнопки (как раньше)
         buttons_layout = QHBoxLayout()
         cancel_btn = QPushButton("Отмена")
         cancel_btn.clicked.connect(self.reject)
@@ -277,51 +318,7 @@ class EditRecordDialog(QDialog):
             w = QTimeEdit()
             w.setStyleSheet(spin_style)
             return w
-        # Проверка ENUM типов
-        if self._is_enum_type(col_info.get('type', '')):
-            w = QComboBox()
-            try:
-                enum_values = self.controller.list_enum_values(col_info.get('type', ''))
-                w.addItems(enum_values)
-                w.setStyleSheet(f"""
-                    QComboBox {{
-                        background-color: white;
-                        color: #333333;
-                        border: 1px solid #c0c0c0;
-                        padding: 4px;
-                        min-width: 120px;
-                        border-radius: 4px;
-                    }}
-                    QComboBox:focus {{
-                        border: 1px solid {blue};
-                    }}
-                    QComboBox::drop-down {{
-                        border: none;
-                        width: 20px;
-                    }}
-                """)
-            except Exception:
-                # Если не удалось получить значения, используем обычное поле
-                w = ValidatedLineEdit(self.controller)
-            return w
-        
-        if any(t in col_type for t in ['text', 'varchar', 'char']):
-            w = ValidatedLineEdit(self.controller)
-            w.setStyleSheet(f"""
-                QLineEdit {{
-                    background-color: white;
-                    color: #333333;
-                    border: 1px solid #c0c0c0;
-                    padding: 4px;
-                    min-width: 120px;
-                    border-radius: 4px;
-                }}
-                QLineEdit:focus {{
-                    border: 1px solid {blue};
-                }}
-            """)
-            return w
-
+        # Строковые
         w = ValidatedLineEdit(self.controller)
         w.setStyleSheet(f"""
             QLineEdit {{
@@ -373,13 +370,11 @@ class EditRecordDialog(QDialog):
             elif isinstance(widget, QCheckBox):
                 widget.setChecked(bool(value))
             elif isinstance(widget, QComboBox):
-                # Устанавливаем значение ENUM в комбобокс
                 value_str = str(value)
                 index = widget.findText(value_str)
                 if index >= 0:
                     widget.setCurrentIndex(index)
                 else:
-                    # Если значение не найдено, добавляем его
                     widget.addItem(value_str)
                     widget.setCurrentIndex(widget.count() - 1)
             elif isinstance(widget, QDateEdit):
@@ -433,19 +428,16 @@ class EditRecordDialog(QDialog):
         type_name = info["type_name"]
         attrs = info["attrs"]
         widgets = info["widgets"]
-        
-        # Проверяем, выбрано ли значение из выпадающего списка
         value_combo = info.get("value_combo")
+
         if value_combo:
             selected_data = value_combo.itemData(value_combo.currentIndex())
             if selected_data and selected_data != "__new__":
-                # Возвращаем выбранное значение как есть (оно уже в правильном формате)
-                return selected_data
-            # Если выбрано "Создать новое значение" или "-- Выберите значение --", продолжаем построение
+                return AsIs(selected_data)
 
         if not attrs and "__raw__" in widgets:
             raw = widgets["__raw__"].text().strip()
-            return raw if raw else None
+            return AsIs(raw) if raw else None
 
         values_sql = []
         for attr_name, attr_type in attrs:
@@ -454,7 +446,7 @@ class EditRecordDialog(QDialog):
                 values_sql.append("NULL")
                 continue
             val = self._get_simple_widget_value(w, attr_type.lower())
-            if val is None or val == "":
+            if val in (None, ""):
                 values_sql.append("NULL")
             else:
                 if isinstance(val, bool):
@@ -465,7 +457,7 @@ class EditRecordDialog(QDialog):
                     s = str(val).replace("'", "''")
                     values_sql.append(f"'{s}'")
         inner = ", ".join(values_sql)
-        return f"ROW({inner})::{type_name}"
+        return AsIs(f"ROW({inner})::{type_name}")
 
     def validate_and_accept(self):
         first_col = self.columns_info[0]['name']
@@ -485,8 +477,7 @@ class EditRecordDialog(QDialog):
             if col_name == first_col:
                 continue
 
-            col_type = col.get('type', '')
-            col_type_lower = col_type.lower()
+            data_type = (col.get('type') or '').lower()
             is_nullable = col.get('nullable', True)
             fw = self.field_widgets.get(col_name)
             if fw is None:
@@ -496,16 +487,16 @@ class EditRecordDialog(QDialog):
                 val = self._build_composite_value(fw)
                 if (val is None or val == "") and not is_nullable:
                     errors.append(f"Поле '{col_name}' обязательно для заполнения")
-                if val not in (None, ""):
+                if val not in (None, "",):
                     data[col_name] = val
             else:
-                value = self._get_simple_widget_value(fw, col_type_lower)
+                value = self._get_simple_widget_value(fw, data_type)
                 if (value in (None, "",) or (isinstance(fw, (QSpinBox, QDoubleSpinBox)) and value == 0)) and not is_nullable:
                     if isinstance(fw, (QSpinBox, QDoubleSpinBox)) and value == 0:
                         pass
                     else:
                         errors.append(f"Поле '{col_name}' обязательно для заполнения")
-                if value not in (None, ""):
+                if value not in (None, "",):
                     data[col_name] = value
 
         if errors:

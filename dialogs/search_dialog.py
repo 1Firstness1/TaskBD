@@ -1,19 +1,20 @@
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QFormLayout, QComboBox, QLineEdit,
-    QGroupBox, QDialogButtonBox, QCheckBox, QMessageBox
+    QDialog, QVBoxLayout, QFormLayout, QComboBox, QLineEdit, QDialogButtonBox, QMessageBox, QLabel
 )
 
 class SearchDialog(QDialog):
-    """Диалог поиска по таблице с защитой от SQL Injection и SIMILAR TO."""
+    """Диалог поиска по таблице с защитой от SQL Injection и переключателем LIKE/SIMILAR TO."""
     def __init__(self, controller, table_name, columns_info, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.table_name = table_name
         self.columns_info = columns_info
+
         self.search_condition = None
-        self.search_params = []
-        self.setWindowTitle("Поиск")
-        self.setMinimumWidth(500)
+        self.search_params = None
+
+        self.setWindowTitle(f"Поиск: {self.table_name}")
+        self.setMinimumWidth(560)
         self.setup_ui()
         self.center_on_screen()
 
@@ -23,112 +24,110 @@ class SearchDialog(QDialog):
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("<h3>Поиск по таблице</h3>"))
 
-        checkbox_style = """
-            QCheckBox { color: #333333; }
-            QCheckBox::indicator {
-                width: 14px; height: 14px;
-                border: 1px solid #c0c0c0; border-radius: 3px; background: white;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #4a86e8; border: 1px solid #2a66c8;
-            }
-        """
+        form = QFormLayout()
+        # Столбец
+        self.col_combo = QComboBox()
+        self.col_combo.setMinimumWidth(200)
+        self.col_combo.view().setMinimumWidth(240)
+        self.col_combo.addItems([c['name'] for c in self.columns_info])
+        form.addRow("Столбец:", self.col_combo)
 
-        form_layout = QFormLayout()
-        self.column_combo = QComboBox()
-        self.column_combo.setMinimumWidth(200)
-        self.column_combo.view().setMinimumWidth(250)
-        self.column_combo.addItems([col['name'] for col in self.columns_info])
-        form_layout.addRow("Столбец:", self.column_combo)
-
-        self.search_type_combo = QComboBox()
-        self.search_type_combo.setMinimumWidth(220)
-        self.search_type_combo.view().setMinimumWidth(260)
-        self.search_type_combo.addItems([
-            "LIKE (шаблонный поиск)",
-            "~ (регулярка)",
-            "~* (регулярка без учета регистра)",
-            "!~ (не соответствует)",
-            "!~* (не соответствует без учета регистра)",
-            "= (точное совпадение)"
+        # Оператор
+        self.op_combo = QComboBox()
+        self.op_combo.setMinimumWidth(200)
+        self.op_combo.view().setMinimumWidth(240)
+        # Переключатель между LIKE и SIMILAR TO + отрицания
+        self.op_combo.addItems([
+            "LIKE",
+            "NOT LIKE",
+            "SIMILAR TO",
+            "NOT SIMILAR TO",
+            # Дополнительно оставим классические:
+            "=", "!=", "<", "<=", ">", ">="
         ])
-        form_layout.addRow("Тип поиска:", self.search_type_combo)
+        form.addRow("Оператор:", self.op_combo)
 
-        self.search_text = QLineEdit()
-        self.search_text.setPlaceholderText("Введите текст для поиска...")
-        form_layout.addRow("Текст:", self.search_text)
-        layout.addLayout(form_layout)
+        # Значение
+        self.value_edit = QLineEdit()
+        form.addRow("Значение:", self.value_edit)
 
-        hint_label = QLabel(
-            "<i><b>Подсказка:</b><br>"
-            "• LIKE: используйте % (пример: %текст%)<br>"
-            "• ~: POSIX регулярное выражение<br>"
-            "• ~*: регулярка без учета регистра</i>"
-        )
-        hint_label.setWordWrap(True)
-        layout.addWidget(hint_label)
+        # Хинт по шаблонам
+        self.pattern_hint = QLabel("")
+        self.pattern_hint.setStyleSheet("color: #666666;")
+        form.addRow("Подсказка:", self.pattern_hint)
 
-        self.regex_group = QGroupBox("SIMILAR TO")
-        regex_layout = QVBoxLayout(self.regex_group)
-        self.regex_column_combo = QComboBox()
-        self.regex_column_combo.setMinimumWidth(200)
-        self.regex_column_combo.view().setMinimumWidth(250)
-        self.regex_pattern_edit = QLineEdit()
-        self.regex_pattern_edit.setPlaceholderText("Шаблон (например: '(Р|Г)%')")
-        self.regex_not_checkbox = QCheckBox("NOT SIMILAR TO")
-        self.regex_not_checkbox.setStyleSheet(checkbox_style)
+        # Реакция на смену оператора — обновляем хинт
+        self.op_combo.currentTextChanged.connect(self._update_hint)
 
-        cols = [c['name'] for c in self.controller.get_table_columns(self.table_name)]
-        self.regex_column_combo.addItems(cols)
-        regex_layout.addWidget(QLabel("Столбец"))
-        regex_layout.addWidget(self.regex_column_combo)
-        regex_layout.addWidget(QLabel("Шаблон"))
-        regex_layout.addWidget(self.regex_pattern_edit)
-        regex_layout.addWidget(self.regex_not_checkbox)
-        layout.addWidget(self.regex_group)
+        layout.addLayout(form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept_dialog)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        # Инициализация подсказки
+        self._update_hint(self.op_combo.currentText())
+
+    def _update_hint(self, op_text):
+        """
+        Обновляет подсказку по синтаксису шаблонов в зависимости от оператора.
+        """
+        if op_text in ("LIKE", "NOT LIKE"):
+            # Примеры LIKE шаблонов
+            self.pattern_hint.setText("Пример для LIKE: '%00%' (содержит '00'), 'A-%' (начинается с 'A-').")
+        elif op_text in ("SIMILAR TO", "NOT SIMILAR TO"):
+            # Примеры SIMILAR TO шаблонов в синтаксисе PostgreSQL
+            # SIMILAR TO использует «шаблоны» SQL (похожие на regexp, но с синтаксисом SQL)
+            # В простых случаях можно использовать '%00%' аналогично LIKE.
+            # Также доступны группировки: '(A|B)%', символы классов '[0-9]%' — требуется дубль экранирования в Python при необходимости.
+            self.pattern_hint.setText("Пример для SIMILAR TO: '%00%' (содержит '00'), '(A|B)%' (начинается с A или B).")
+        else:
+            self.pattern_hint.setText("Для операторов сравнения введите число или точное значение.")
+
     def accept_dialog(self):
-        pattern = self.regex_pattern_edit.text().strip()
-        if pattern:
-            col = self.regex_column_combo.currentText()
-            not_part = "NOT " if self.regex_not_checkbox.isChecked() else ""
-            # Используем параметризацию для защиты от SQL injection
-            self.search_condition = f"{col} {not_part}SIMILAR TO %s"
-            self.search_params = [pattern]
+        col = self.col_combo.currentText()
+        op = self.op_combo.currentText()
+        raw_val = self.value_edit.text().strip()
+
+        # Операторы без параметра
+        if op in ("IS NULL", "IS NOT NULL"):
+            self.search_condition = f"{col} {op}"
+            self.search_params = None
             self.accept()
             return
 
-        column = self.column_combo.currentText()
-        search_text = self.search_text.text().strip()
-        if not search_text:
-            QMessageBox.warning(self, "Ошибка", "Введите текст для поиска или заполните блок SIMILAR TO")
+        # Валидация вводимого значения
+        if raw_val == "":
+            QMessageBox.warning(self, "Ошибка", "Введите значение для поиска")
             return
 
-        st = self.search_type_combo.currentText()
-        if "LIKE" in st:
-            self.search_condition = f"{column} LIKE %s"
-            self.search_params = [f"%{search_text}%"]
-        elif "~*" in st and "!" in st:
-            self.search_condition = f"{column} !~* %s"
-            self.search_params = [search_text]
-        elif "~*" in st:
-            self.search_condition = f"{column} ~* %s"
-            self.search_params = [search_text]
-        elif "!~" in st:
-            self.search_condition = f"{column} !~ %s"
-            self.search_params = [search_text]
-        elif "~" in st:
-            self.search_condition = f"{column} ~ %s"
-            self.search_params = [search_text]
+        # Для LIKE/SIMILAR TO обязателен параметр для безопасного выполнения
+        if op in ("LIKE", "NOT LIKE", "SIMILAR TO", "NOT SIMILAR TO"):
+            # В PostgreSQL SIMILAR TO умеет принимать те же простые шаблоны как и LIKE, например '%00%'.
+            # Поэтому тест с pattern '%00%' должен работать и тут.
+            # Формируем параметризованное условие:
+            self.search_condition = f"{col} {op} %s"
+            self.search_params = [raw_val]
+            self.accept()
+            return
+
+        # Классические сравнения — пытаемся определить число
+        if self._is_number(raw_val):
+            self.search_condition = f"{col} {op} %s"
+            self.search_params = [float(raw_val)]
         else:
-            self.search_condition = f"{column} = %s"
-            self.search_params = [search_text]
+            # Строка — сравнение с параметром
+            self.search_condition = f"{col} {op} %s"
+            self.search_params = [raw_val]
 
         self.accept()
+
+    @staticmethod
+    def _is_number(s):
+        try:
+            float(s)
+            return True
+        except ValueError:
+            return False

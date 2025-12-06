@@ -1,10 +1,12 @@
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QFormLayout, QComboBox, QLineEdit, QTableWidget,
-    QDialogButtonBox, QSpinBox, QPushButton, QMessageBox, QTableWidgetItem
+    QDialogButtonBox, QSpinBox, QPushButton, QMessageBox, QTableWidgetItem,
+    QWidget, QHBoxLayout, QInputDialog      # добавлены недостающие
 )
 from PySide6.QtCore import Qt
 from controller import NumericTableItem, DateTableItem, BooleanTableItem, TimestampTableItem
 from logger import Logger
+
 
 class StringFunctionsDialog(QDialog):
     """Диалог работы со строковыми функциями."""
@@ -12,7 +14,7 @@ class StringFunctionsDialog(QDialog):
         super().__init__(parent)
         self.controller = controller
         self.table_name = table_name
-        self.columns_info = columns_info
+        self.columns_info = columns_info or []
         self.selected_column = selected_column
         self.logger = Logger()
 
@@ -32,20 +34,27 @@ class StringFunctionsDialog(QDialog):
 
         form_layout = QFormLayout()
 
+        # Выбор столбца (только строковые, fallback на все)
         self.column_combo = QComboBox()
         self.column_combo.setMinimumWidth(200)
         self.column_combo.view().setMinimumWidth(240)
-        string_columns = [col['name'] for col in self.columns_info
-                          if 'char' in col.get('type', '').lower() or 'text' in col.get('type', '').lower()]
+
+        string_columns = [
+            col['name'] for col in self.columns_info
+            if 'char' in (col.get('type', '') or '').lower()
+               or 'text' in (col.get('type', '') or '').lower()
+               or (col.get('udt_name') and ('char' in col.get('udt_name').lower() or 'text' in col.get('udt_name').lower()))
+        ]
         if not string_columns:
             string_columns = [col['name'] for col in self.columns_info]
-        self.column_combo.addItems(string_columns)
 
+        self.column_combo.addItems(string_columns)
         if self.selected_column and self.selected_column in string_columns:
             self.column_combo.setCurrentText(self.selected_column)
 
         form_layout.addRow("Столбец:", self.column_combo)
 
+        # Список функций
         self.function_combo = QComboBox()
         self.function_combo.setMinimumWidth(240)
         self.function_combo.view().setMinimumWidth(280)
@@ -67,15 +76,18 @@ class StringFunctionsDialog(QDialog):
 
         layout.addLayout(form_layout)
 
+        # Параметры функции (динамический блок)
         self.params_widget = QWidget()
         self.params_layout = QFormLayout(self.params_widget)
         layout.addWidget(self.params_widget)
 
+        # Таблица результатов
         layout.addWidget(QLabel("<b>Результат:</b>"))
         self.result_table = QTableWidget()
         self.result_table.setEditTriggers(QTableWidget.NoEditTriggers)
         layout.addWidget(self.result_table)
 
+        # Кнопки действий
         buttons_layout = QHBoxLayout()
         apply_btn = QPushButton("Применить функцию")
         apply_btn.clicked.connect(self.apply_function)
@@ -89,28 +101,33 @@ class StringFunctionsDialog(QDialog):
         close_btn = QPushButton("Закрыть")
         close_btn.clicked.connect(self.accept)
         buttons_layout.addWidget(close_btn)
+
         layout.addLayout(buttons_layout)
 
+        # Инициализация параметрических полей
         self.on_function_changed(self.function_combo.currentText())
 
     def on_function_changed(self, function_text):
+        # Очистка предыдущих параметров
         while self.params_layout.rowCount() > 0:
             self.params_layout.removeRow(0)
 
+        # SUBSTRING параметры
         if "SUBSTRING" in function_text:
             self.start_pos = QSpinBox()
-            self.start_pos.setRange(1, 1000)
+            self.start_pos.setRange(1, 100000)
             self.start_pos.setValue(1)
             self.params_layout.addRow("Начальная позиция:", self.start_pos)
 
             self.length = QSpinBox()
-            self.length.setRange(1, 1000)
+            self.length.setRange(1, 100000)
             self.length.setValue(10)
             self.params_layout.addRow("Длина:", self.length)
 
+        # LPAD / RPAD параметры
         elif "LPAD" in function_text or "RPAD" in function_text:
             self.pad_length = QSpinBox()
-            self.pad_length.setRange(1, 1000)
+            self.pad_length.setRange(1, 100000)
             self.pad_length.setValue(20)
             self.params_layout.addRow("Длина:", self.pad_length)
 
@@ -119,6 +136,7 @@ class StringFunctionsDialog(QDialog):
             self.pad_char.setMaxLength(1)
             self.params_layout.addRow("Символ:", self.pad_char)
 
+        # CONCAT параметры
         elif "CONCAT" in function_text:
             self.concat_text = QLineEdit()
             self.concat_text.setPlaceholderText("Текст для объединения")
@@ -138,37 +156,40 @@ class StringFunctionsDialog(QDialog):
 
         try:
             if "UPPER" in function:
-                sql_expr = f"upper(\"{column}\")"
+                sql_expr = f'upper("{column}")'
             elif "LOWER" in function:
-                sql_expr = f"lower(\"{column}\")"
+                sql_expr = f'lower("{column}")'
             elif "INITCAP" in function:
-                sql_expr = f"initcap(\"{column}\")"
+                sql_expr = f'initcap("{column}")'
             elif "SUBSTRING" in function:
                 start = self.start_pos.value()
                 length = self.length.value()
-                sql_expr = f"substring(\"{column}\" FROM {start} FOR {length})"
+                sql_expr = f'substring("{column}" FROM {start} FOR {length})'
             elif "LTRIM" in function:
-                sql_expr = f"ltrim(\"{column}\")"
+                sql_expr = f'ltrim("{column}")'
             elif "RTRIM" in function:
-                sql_expr = f"rtrim(\"{column}\")"
+                sql_expr = f'rtrim("{column}")'
             elif "TRIM" in function:
-                sql_expr = f"trim(\"{column}\")"
+                sql_expr = f'trim("{column}")'
             elif "LPAD" in function:
                 length = self.pad_length.value()
-                char = self.pad_char.text() or ' '
+                char = (self.pad_char.text() or ' ').replace("'", "''")
                 sql_expr = f"lpad(\"{column}\", {length}, '{char}')"
             elif "RPAD" in function:
                 length = self.pad_length.value()
-                char = self.pad_char.text() or ' '
+                char = (self.pad_char.text() or ' ').replace("'", "''")
                 sql_expr = f"rpad(\"{column}\", {length}, '{char}')"
             elif "CONCAT" in function:
-                text = self.concat_text.text()
+                text = (self.concat_text.text() or '').replace("'", "''")
+                if not text:
+                    # Пустой текст — предупреждение
+                    QMessageBox.information(self, "Предупреждение", "Пустая строка для CONCAT — результат будет исходный столбец.")
                 if self.concat_position.currentText() == "В начале":
                     sql_expr = f"concat('{text}', \"{column}\")"
                 else:
                     sql_expr = f"concat(\"{column}\", '{text}')"
             elif "LENGTH" in function:
-                sql_expr = f"length(\"{column}\")"
+                sql_expr = f'length("{column}")'
             else:
                 raise ValueError("Неизвестная функция")
 
@@ -184,7 +205,7 @@ class StringFunctionsDialog(QDialog):
                 QMessageBox.warning(self, "Ошибка", "Не удалось сформировать SQL выражение")
                 return
 
-            query = f"SELECT {column} as original, {sql_expr} as result FROM \"{self.table_name}\" LIMIT 20"
+            query = f'SELECT "{column}" as original, {sql_expr} as result FROM "{self.table_name}" LIMIT 20'
             results = self.controller.execute_select(query)
 
             if results:
@@ -194,22 +215,27 @@ class StringFunctionsDialog(QDialog):
 
                 from datetime import datetime as _dt, date as _date
                 for row_idx, row_data in enumerate(results):
-                    for col_idx, value in enumerate(row_data):
+                    # row_data может быть list/tuple или dict (в зависимости от контроллера)
+                    if isinstance(row_data, dict):
+                        ordered_values = [row_data.get('original'), row_data.get('result')]
+                    else:
+                        ordered_values = row_data
+
+                    for col_idx, value in enumerate(ordered_values):
                         if value is None:
                             item = QTableWidgetItem("NULL")
                             item.setForeground(Qt.gray)
                         else:
-                            str_value = str(value)
                             if isinstance(value, (int, float)):
-                                item = NumericTableItem(str_value, value)
+                                item = NumericTableItem(str(value), value)
                             elif isinstance(value, _date):
-                                item = DateTableItem(str_value, value)
+                                item = DateTableItem(str(value), value)
                             elif isinstance(value, _dt):
-                                item = TimestampTableItem(str_value, value)
+                                item = TimestampTableItem(str(value), value)
                             elif isinstance(value, bool):
-                                item = BooleanTableItem(str_value, value)
+                                item = BooleanTableItem(str(value), value)
                             else:
-                                item = QTableWidgetItem(str_value)
+                                item = QTableWidgetItem(str(value))
                         self.result_table.setItem(row_idx, col_idx, item)
 
                 self.result_table.resizeColumnsToContents()
@@ -253,7 +279,7 @@ class StringFunctionsDialog(QDialog):
                 QMessageBox.critical(self, "Ошибка", f"Не удалось добавить столбец:\n{error}")
                 return
 
-            update_query = f"UPDATE \"{self.table_name}\" SET \"{new_column_name}\" = {sql_expr}"
+            update_query = f'UPDATE "{self.table_name}" SET "{new_column_name}" = {sql_expr}'
             success, error = self.controller.execute_update(update_query)
 
             if success:
@@ -265,8 +291,12 @@ class StringFunctionsDialog(QDialog):
                 self.logger.info(f"Создан столбец '{new_column_name}' с функцией {self.current_function}")
                 self.accept()
                 if hasattr(self.parent(), 'accept'):
-                    self.parent().accept()
+                    try:
+                        self.parent().accept()
+                    except Exception:
+                        pass
             else:
+                # Откат столбца
                 self.controller.drop_column(self.table_name, new_column_name)
                 QMessageBox.critical(self, "Ошибка", f"Ошибка при заполнении столбца:\n{error}")
                 self.logger.error(f"Ошибка при заполнении столбца '{new_column_name}': {error}")

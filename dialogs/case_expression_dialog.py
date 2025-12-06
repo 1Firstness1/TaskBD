@@ -1,11 +1,11 @@
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QCheckBox, QGroupBox, QVBoxLayout, QLabel, QLineEdit,
+    QDialog, QVBoxLayout, QCheckBox, QGroupBox, QVBoxLayout as QVBoxLayout_, QLabel, QLineEdit,
     QPushButton, QComboBox, QFormLayout, QDialogButtonBox, QHBoxLayout, QMessageBox
 )
 from PySide6.QtCore import Qt
 
 class CaseExpressionDialog(QDialog):
-    """Конструктор CASE + COALESCE + NULLIF (без неправильного COALESCE)."""
+    """Конструктор CASE + COALESCE + NULLIF (улучшенная валидация и кавычение)."""
     def __init__(self, controller, table_name, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -43,9 +43,9 @@ class CaseExpressionDialog(QDialog):
         layout.addWidget(self.case_enable_check)
 
         self.case_group = QGroupBox("CASE выражение")
-        case_layout = QVBoxLayout(self.case_group)
+        case_layout = QVBoxLayout_(self.case_group)
         case_layout.addWidget(QLabel("Условия WHEN ... THEN ..."))
-        self.when_container = QVBoxLayout()
+        self.when_container = QVBoxLayout_()
         case_layout.addLayout(self.when_container)
 
         add_when_btn = QPushButton("Добавить WHEN")
@@ -138,19 +138,18 @@ class CaseExpressionDialog(QDialog):
         val = val.strip()
         if val == "":
             return "''"
-        # Если значение уже в кавычках, возвращаем как есть
         if (val.startswith("'") and val.endswith("'")) or (val.startswith('"') and val.endswith('"')):
             return val
-        # Если это число (int или float), не кавычим
         try:
             float(val)
             return val
         except ValueError:
             pass
-        # Если это имя столбца или выражение (содержит точку или скобки), не кавычим
-        if '.' in val or '(' in val or ' ' in val:
+        # Если выглядит как выражение (скобки, точка, функции), не кавычим
+        expr_tokens = ['(', ')', '.', '::']
+        if any(t in val for t in expr_tokens):
             return val
-        # Иначе это строка - кавычим и экранируем одинарные кавычки
+        # Если есть пробелы, но нет признаков выражений — считаем строкой
         escaped = val.replace("'", "''")
         return f"'{escaped}'"
 
@@ -164,7 +163,7 @@ class CaseExpressionDialog(QDialog):
             for col_combo, op_combo, when_edit, then_edit in self.when_rows:
                 col = col_combo.currentText()
                 if not col:
-                    continue  # Пропускаем пустые строки
+                    continue
                 op = op_combo.currentText()
                 when_raw = when_edit.text().strip()
                 then_raw = then_edit.text().strip()
@@ -173,8 +172,7 @@ class CaseExpressionDialog(QDialog):
                     if not then_raw:
                         continue
                     parts.append(
-                        f"WHEN {self.table_name}.{col} {op} "
-                        f"THEN {self._quote_if_needed(then_raw)}"
+                        f"WHEN {self.table_name}.{col} {op} THEN {self._quote_if_needed(then_raw)}"
                     )
                     has_when = True
                 else:
@@ -182,17 +180,14 @@ class CaseExpressionDialog(QDialog):
                         continue
                     q_when = self._quote_if_needed(when_raw)
                     parts.append(
-                        f"WHEN {self.table_name}.{col} {op} {q_when} "
-                        f"THEN {self._quote_if_needed(then_raw)}"
+                        f"WHEN {self.table_name}.{col} {op} {q_when} THEN {self._quote_if_needed(then_raw)}"
                     )
                     has_when = True
 
             if not has_when:
                 QMessageBox.warning(
-                    self,
-                    "Ошибка",
-                    "Если CASE включён, необходимо добавить хотя бы одно корректное WHEN ... THEN ...\n"
-                    "Либо выключите CASE (снимите галочку), чтобы использовать только COALESCE/NULLIF."
+                    self, "Ошибка",
+                    "Если CASE включён, необходимо добавить хотя бы одно корректное WHEN ... THEN ..."
                 )
                 return
 
@@ -202,31 +197,23 @@ class CaseExpressionDialog(QDialog):
             parts.append("END")
             expr = " ".join(parts)
 
-        # NULLIF применяется первым (внутренняя функция)
-        # NULLIF(expr1, expr2) - если expr1 == expr2, возвращает NULL, иначе expr1
         n1 = self.nullif_first_edit.text().strip()
         n2 = self.nullif_second_edit.text().strip()
         if n1 and n2:
-            # Если n1 - это имя столбца, используем его напрямую, иначе как значение
             if expr:
                 base_for_nullif = expr
             else:
-                # Проверяем, является ли n1 именем столбца
                 try:
                     cols_info = self.controller.get_table_columns(self.table_name)
                     col_names = [c['name'] for c in cols_info]
                     if n1 in col_names:
                         base_for_nullif = f"{self.table_name}.{n1}"
                     else:
-                        # Может быть выражение или значение
-                        base_for_nullif = n1 if ('.' in n1 or '(' in n1) else self._quote_if_needed(n1)
+                        base_for_nullif = n1 if any(t in n1 for t in ['(', ')', '.', '::']) else self._quote_if_needed(n1)
                 except Exception:
-                    # Если не удалось проверить, используем как есть
-                    base_for_nullif = n1 if ('.' in n1 or '(' in n1) else self._quote_if_needed(n1)
+                    base_for_nullif = n1 if any(t in n1 for t in ['(', ')', '.', '::']) else self._quote_if_needed(n1)
             expr = f"NULLIF({base_for_nullif}, {self._quote_if_needed(n2)})"
 
-        # COALESCE применяется последним (внешняя функция)
-        # COALESCE(expr, default) - возвращает первое не-NULL значение
         coalesce_val = self.coalesce_value_edit.text().strip()
         if coalesce_val:
             if expr:
@@ -241,15 +228,14 @@ class CaseExpressionDialog(QDialog):
             expr = f"COALESCE({base_for_coalesce}, {self._quote_if_needed(coalesce_val)})"
 
         if expr is None:
-            QMessageBox.warning(
-                self,
-                "Ошибка",
-                "Ничего не задано: включите CASE или заполните COALESCE/NULLIF."
-            )
+            QMessageBox.warning(self, "Ошибка", "Ничего не задано: включите CASE или заполните COALESCE/NULLIF.")
             return
 
         alias = self.case_alias_edit.text().strip()
         if alias:
+            # Кавычим алиас, если содержит пробелы или спецсимволы
+            if any(ch in alias for ch in [' ', '-', '.']):
+                alias = f'"{alias}"'
             expr = f"{expr} AS {alias}"
 
         self.final_expr = expr

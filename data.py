@@ -957,13 +957,8 @@ class DatabaseManager:
 
     def get_table_columns(self, table_name):
         """
-        Получение списка столбцов таблицы с информацией о типах.
-
-        Args:
-            table_name: Имя таблицы
-
-        Returns:
-            list: Список словарей с информацией о столбцах
+        Возвращает список столбцов таблицы с информацией о типах.
+        Включает udt_name (фактическое имя пользовательского типа).
         """
         try:
             self.cursor.execute(
@@ -973,53 +968,54 @@ class DatabaseManager:
                     data_type, 
                     is_nullable,
                     column_default,
-                    character_maximum_length
+                    character_maximum_length,
+                    udt_name
                 FROM information_schema.columns 
                 WHERE table_name = %s
                 ORDER BY ordinal_position
                 """,
                 (table_name,),
             )
-
             columns = []
             for row in self.cursor.fetchall():
                 columns.append({
                     'name': row[0],
-                    'type': row[1],
+                    'type': row[1],                  # 'integer' | 'USER-DEFINED' | 'text' | ...
                     'nullable': row[2] == 'YES',
                     'default': row[3],
-                    'max_length': row[4]
+                    'max_length': row[4],
+                    'udt_name': row[5],              # фактическое имя enum/составного типа
                 })
             return columns
         except psycopg2.Error as e:
-            self.logger.error(f"Ошибка получения столбцов таблицы {table_name}: {str(e)}")
-            self.connection.rollback()
+            self.logger.error(f"Ошибка получения столбцов {table_name}: {e}")
+            if self.connection:
+                self.connection.rollback()
             return []
 
     def execute_select_query(self, query, params=None):
         """
-        Выполнение SELECT запроса.
-
-        Args:
-            query: SQL запрос
-            params: Параметры запроса (опционально)
-
-        Returns:
-            list: Результаты запроса
+        Универсальный метод выполнения SELECT с параметрами.
+        Возвращает список строк (list of tuples).
         """
         try:
-            if not query or not query.strip():
-                self.logger.warning("Попытка выполнить пустой запрос")
-                return []
-
             if params:
-                self.cursor.execute(query, params)
+                self.cursor.execute(query, tuple(params))
             else:
                 self.cursor.execute(query)
-            return self.cursor.fetchall()
+            rows = self.cursor.fetchall()
+            # Лёгкое логирование запроса для отладки (без слишком длинных параметров)
+            try:
+                short_params = tuple(p if (isinstance(p, (int, float)) or (isinstance(p, str) and len(p) <= 100)) else '...'
+                                     for p in (params or []))
+                self.logger.info(f"SELECT ok: {query} | params={short_params}")
+            except Exception:
+                pass
+            return rows
         except psycopg2.Error as e:
-            self.logger.error(f"Ошибка выполнения SELECT запроса: {str(e)}")
-            self.connection.rollback()
+            self.logger.error(f"Ошибка SELECT: {e}\nQuery: {query}\nParams: {params}")
+            if self.connection:
+                self.connection.rollback()
             return []
 
     def execute_update_query(self, query, params=None):
@@ -1100,56 +1096,43 @@ class DatabaseManager:
             self.logger.error(f"Ошибка удаления таблицы {table_name}: {error_msg}")
             return False, error_msg
 
-    def get_table_data(self, table_name, columns=None, where=None, order_by=None, group_by=None, having=None,
-                       params=None):
+    def get_table_data(self, table_name, columns=None, where=None, order_by=None, group_by=None, having=None, params=None):
         """
-        Получение данных из таблицы с возможностью фильтрации и сортировки.
-
-        Args:
-            table_name: Имя таблицы
-            columns: Список столбцов для выборки (None = все)
-            where: Условие WHERE
-            order_by: Условие ORDER BY
-            group_by: Условие GROUP BY
-            having: Условие HAVING
-            params: Параметры для WHERE
-
-        Returns:
-            list: Результаты запроса
+        Получение данных из таблицы c поддержкой параметров для WHERE/HAVING.
+        - columns: None | ['*'] | список выражений/столбцов (без автоматического квотирования выражений!)
+        - where: строка SQL с плейсхолдерами %s
+        - group_by: строка с выражениями (без плейсхолдеров)
+        - having: строка SQL (обычно с агрегатами), может содержать %s
+        - order_by: строка с выражениями сортировки
+        - params: список значений для %s (для WHERE и HAVING в порядке следования)
         """
-        try:
-            # Обработка списка столбцов (может содержать выражения с пробелами)
-            if columns:
-                # Если это список, объединяем через запятую
-                if isinstance(columns, list):
-                    cols = ', '.join(columns)
-                else:
-                    cols = columns
-            else:
-                cols = '*'
+        params = list(params) if params else []
+        # SELECT-список
+        if not columns or (len(columns) == 1 and columns[0] == '*'):
+            select_list = '*'
+        else:
+            # не квотируем выражения, оставляем как есть (CASE, COUNT(..), table.col, alias и т.д.)
+            select_list = ", ".join(columns)
 
-            table_identifier = sql.Identifier(table_name)
-            query = f"SELECT {cols} FROM {table_identifier.as_string(self.cursor)}"
+        query = f'SELECT {select_list} FROM "{table_name}"'
 
-            if where:
-                query += f" WHERE {where}"
-            if group_by:
-                query += f" GROUP BY {group_by}"
-            if having:
-                query += f" HAVING {having}"
-            if order_by:
-                query += f" ORDER BY {order_by}"
+        # WHERE
+        if where and where.strip():
+            query += f" WHERE {where}"
 
-            if params:
-                self.cursor.execute(query, params)
-            else:
-                self.cursor.execute(query)
+        # GROUP BY
+        if group_by and group_by.strip():
+            query += f" GROUP BY {group_by}"
 
-            return self.cursor.fetchall()
-        except psycopg2.Error as e:
-            self.logger.error(f"Ошибка получения данных таблицы {table_name}: {str(e)}")
-            self.connection.rollback()
-            return []
+        # HAVING
+        if having and having.strip():
+            query += f" HAVING {having}"
+
+        # ORDER BY
+        if order_by and order_by.strip():
+            query += f" ORDER BY {order_by}"
+
+        return self.execute_select_query(query, params)
 
     def add_table_column(self, table_name, column_name, data_type, nullable=True, default=None):
         """
