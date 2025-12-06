@@ -404,8 +404,60 @@ class TheaterController:
         """Удаление таблицы."""
         return self.db.drop_table(table_name)
 
+    def list_enum_types(self):
+        return self.db.list_enum_types()
 
-# Вспомогательные классы для таблиц
+    def list_composite_types(self):
+        return self.db.list_composite_types()
+
+    def create_enum_type(self, type_name, values):
+        return self.db.create_enum_type(type_name, values)
+
+    def create_composite_type(self, type_name, columns):
+        return self.db.create_composite_type(type_name, columns)
+
+    def drop_type(self, type_name):
+        return self.db.drop_type(type_name)
+
+    def list_enum_types(self):
+        return self.db.list_enum_types()
+
+    def list_enum_values(self, type_name):
+        return self.db.list_enum_values(type_name)
+
+    def create_enum_type(self, type_name, values):
+        return self.db.create_enum_type(type_name, values)
+
+    def add_enum_value(self, type_name, new_value, position=None, ref_value=None):
+        return self.db.add_enum_value(type_name, new_value, position, ref_value)
+
+    def rename_enum_value(self, type_name, old_value, new_value):
+        return self.db.rename_enum_value(type_name, old_value, new_value)
+
+    def drop_type(self, type_name):
+        return self.db.drop_type(type_name)
+
+    def list_composite_types(self):
+        return self.db.list_composite_types()
+
+    def list_composite_attributes(self, type_name):
+        return self.db.list_composite_attributes(type_name)
+
+    def create_composite_type(self, type_name, columns):
+        return self.db.create_composite_type(type_name, columns)
+
+    def composite_add_attribute(self, type_name, attr_name, data_type):
+        return self.db.composite_add_attribute(type_name, attr_name, data_type)
+
+    def composite_drop_attribute(self, type_name, attr_name):
+        return self.db.composite_drop_attribute(type_name, attr_name)
+
+    def composite_rename_attribute(self, type_name, old_name, new_name):
+        return self.db.composite_rename_attribute(type_name, old_name, new_name)
+
+    def composite_alter_attribute_type(self, type_name, attr_name, new_type):
+        return self.db.composite_alter_attribute_type(type_name, attr_name, new_type)
+
 
 class NumericTableItem(QTableWidgetItem):
     """

@@ -957,13 +957,8 @@ class DatabaseManager:
 
     def get_table_columns(self, table_name):
         """
-        Получение списка столбцов таблицы с информацией о типах.
-
-        Args:
-            table_name: Имя таблицы
-
-        Returns:
-            list: Список словарей с информацией о столбцах
+        Возвращает список столбцов таблицы с информацией о типах.
+        Включает udt_name (фактическое имя пользовательского типа).
         """
         try:
             self.cursor.execute(
@@ -973,53 +968,54 @@ class DatabaseManager:
                     data_type, 
                     is_nullable,
                     column_default,
-                    character_maximum_length
+                    character_maximum_length,
+                    udt_name
                 FROM information_schema.columns 
                 WHERE table_name = %s
                 ORDER BY ordinal_position
                 """,
                 (table_name,),
             )
-
             columns = []
             for row in self.cursor.fetchall():
                 columns.append({
                     'name': row[0],
-                    'type': row[1],
+                    'type': row[1],                  # 'integer' | 'USER-DEFINED' | 'text' | ...
                     'nullable': row[2] == 'YES',
                     'default': row[3],
-                    'max_length': row[4]
+                    'max_length': row[4],
+                    'udt_name': row[5],              # фактическое имя enum/составного типа
                 })
             return columns
         except psycopg2.Error as e:
-            self.logger.error(f"Ошибка получения столбцов таблицы {table_name}: {str(e)}")
-            self.connection.rollback()
+            self.logger.error(f"Ошибка получения столбцов {table_name}: {e}")
+            if self.connection:
+                self.connection.rollback()
             return []
 
     def execute_select_query(self, query, params=None):
         """
-        Выполнение SELECT запроса.
-
-        Args:
-            query: SQL запрос
-            params: Параметры запроса (опционально)
-
-        Returns:
-            list: Результаты запроса
+        Универсальный метод выполнения SELECT с параметрами.
+        Возвращает список строк (list of tuples).
         """
         try:
-            if not query or not query.strip():
-                self.logger.warning("Попытка выполнить пустой запрос")
-                return []
-
             if params:
-                self.cursor.execute(query, params)
+                self.cursor.execute(query, tuple(params))
             else:
                 self.cursor.execute(query)
-            return self.cursor.fetchall()
+            rows = self.cursor.fetchall()
+            # Лёгкое логирование запроса для отладки (без слишком длинных параметров)
+            try:
+                short_params = tuple(p if (isinstance(p, (int, float)) or (isinstance(p, str) and len(p) <= 100)) else '...'
+                                     for p in (params or []))
+                self.logger.info(f"SELECT ok: {query} | params={short_params}")
+            except Exception:
+                pass
+            return rows
         except psycopg2.Error as e:
-            self.logger.error(f"Ошибка выполнения SELECT запроса: {str(e)}")
-            self.connection.rollback()
+            self.logger.error(f"Ошибка SELECT: {e}\nQuery: {query}\nParams: {params}")
+            if self.connection:
+                self.connection.rollback()
             return []
 
     def execute_update_query(self, query, params=None):
@@ -1100,48 +1096,43 @@ class DatabaseManager:
             self.logger.error(f"Ошибка удаления таблицы {table_name}: {error_msg}")
             return False, error_msg
 
-    def get_table_data(self, table_name, columns=None, where=None, order_by=None, group_by=None, having=None,
-                       params=None):
+    def get_table_data(self, table_name, columns=None, where=None, order_by=None, group_by=None, having=None, params=None):
         """
-        Получение данных из таблицы с возможностью фильтрации и сортировки.
-
-        Args:
-            table_name: Имя таблицы
-            columns: Список столбцов для выборки (None = все)
-            where: Условие WHERE
-            order_by: Условие ORDER BY
-            group_by: Условие GROUP BY
-            having: Условие HAVING
-            params: Параметры для WHERE
-
-        Returns:
-            list: Результаты запроса
+        Получение данных из таблицы c поддержкой параметров для WHERE/HAVING.
+        - columns: None | ['*'] | список выражений/столбцов (без автоматического квотирования выражений!)
+        - where: строка SQL с плейсхолдерами %s
+        - group_by: строка с выражениями (без плейсхолдеров)
+        - having: строка SQL (обычно с агрегатами), может содержать %s
+        - order_by: строка с выражениями сортировки
+        - params: список значений для %s (для WHERE и HAVING в порядке следования)
         """
-        try:
-            cols = ', '.join(columns) if columns else '*'
+        params = list(params) if params else []
+        # SELECT-список
+        if not columns or (len(columns) == 1 and columns[0] == '*'):
+            select_list = '*'
+        else:
+            # не квотируем выражения, оставляем как есть (CASE, COUNT(..), table.col, alias и т.д.)
+            select_list = ", ".join(columns)
 
-            table_identifier = sql.Identifier(table_name)
-            query = f"SELECT {cols} FROM {table_identifier.as_string(self.cursor)}"
+        query = f'SELECT {select_list} FROM "{table_name}"'
 
-            if where:
-                query += f" WHERE {where}"
-            if group_by:
-                query += f" GROUP BY {group_by}"
-            if having:
-                query += f" HAVING {having}"
-            if order_by:
-                query += f" ORDER BY {order_by}"
+        # WHERE
+        if where and where.strip():
+            query += f" WHERE {where}"
 
-            if params:
-                self.cursor.execute(query, params)
-            else:
-                self.cursor.execute(query)
+        # GROUP BY
+        if group_by and group_by.strip():
+            query += f" GROUP BY {group_by}"
 
-            return self.cursor.fetchall()
-        except psycopg2.Error as e:
-            self.logger.error(f"Ошибка получения данных таблицы {table_name}: {str(e)}")
-            self.connection.rollback()
-            return []
+        # HAVING
+        if having and having.strip():
+            query += f" HAVING {having}"
+
+        # ORDER BY
+        if order_by and order_by.strip():
+            query += f" ORDER BY {order_by}"
+
+        return self.execute_select_query(query, params)
 
     def add_table_column(self, table_name, column_name, data_type, nullable=True, default=None):
         """
@@ -1536,3 +1527,287 @@ class DatabaseManager:
             self.logger.error(f"Ошибка выполнения JOIN запроса: {str(e)}")
             self.connection.rollback()
             return []
+
+    def list_enum_types(self):
+        """
+        Получение списка пользовательских ENUM типов (public schema).
+        """
+        try:
+            self.cursor.execute("""
+                SELECT typname
+                FROM pg_type
+                WHERE typtype = 'e'
+                  AND typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+                ORDER BY typname
+            """)
+            return [r[0] for r in self.cursor.fetchall()]
+        except psycopg2.Error as e:
+            self.logger.error(f"Ошибка получения ENUM типов: {str(e)}")
+            self.connection.rollback()
+            return []
+
+    def list_composite_types(self):
+        """
+        Получение списка составных типов, исключая типы таблиц (row types).
+        """
+        try:
+            self.cursor.execute("""
+                SELECT t.typname
+                FROM pg_type t
+                WHERE t.typtype = 'c'
+                  AND t.typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM pg_class c WHERE c.reltype = t.oid
+                  )
+                ORDER BY t.typname
+            """)
+            return [r[0] for r in self.cursor.fetchall()]
+        except psycopg2.Error as e:
+            self.logger.error(f"Ошибка получения составных типов: {str(e)}")
+            self.connection.rollback()
+            return []
+
+    def create_enum_type(self, type_name, values):
+        """
+        Создание ENUM типа.
+        values: список строк.
+        """
+        try:
+            if not values:
+                return False, "Список значений пуст"
+            escaped = ", ".join([f"'{v}'" for v in values])
+            q = f"CREATE TYPE {sql.Identifier(type_name).as_string(self.cursor)} AS ENUM ({escaped})"
+            self.cursor.execute(q)
+            self.connection.commit()
+            self.logger.info(f"Создан ENUM тип {type_name}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
+
+    def create_composite_type(self, type_name, columns):
+        """
+        Создание составного типа.
+        columns: список кортежей (name, type)
+        """
+        try:
+            if not columns:
+                return False, "Нет столбцов"
+            col_defs = []
+            for cname, ctype in columns:
+                col_defs.append(f"{sql.Identifier(cname).as_string(self.cursor)} {ctype}")
+            q = f"CREATE TYPE {sql.Identifier(type_name).as_string(self.cursor)} AS ({', '.join(col_defs)})"
+            self.cursor.execute(q)
+            self.connection.commit()
+            self.logger.info(f"Создан составной тип {type_name}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
+
+    def drop_type(self, type_name):
+        """
+        Удаление пользовательского типа (ENUM или составного).
+        """
+        try:
+            q = f"DROP TYPE IF EXISTS {sql.Identifier(type_name).as_string(self.cursor)} CASCADE"
+            self.cursor.execute(q)
+            self.connection.commit()
+            self.logger.info(f"Удалён тип {type_name}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
+
+    def list_enum_types(self):
+        try:
+            self.cursor.execute("""
+                SELECT typname
+                FROM pg_type
+                WHERE typtype = 'e'
+                  AND typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+                ORDER BY typname
+            """)
+            return [r[0] for r in self.cursor.fetchall()]
+        except psycopg2.Error as e:
+            self.logger.error(f"Ошибка получения ENUM типов: {str(e)}")
+            self.connection.rollback()
+            return []
+
+    def list_enum_values(self, type_name):
+        try:
+            self.cursor.execute("""
+                SELECT e.enumlabel
+                FROM pg_type t
+                JOIN pg_enum e ON e.enumtypid = t.oid
+                WHERE t.typname = %s
+                ORDER BY e.enumsortorder
+            """, (type_name,))
+            return [r[0] for r in self.cursor.fetchall()]
+        except psycopg2.Error as e:
+            self.logger.error(f"Ошибка получения значений ENUM {type_name}: {str(e)}")
+            self.connection.rollback()
+            return []
+
+    def create_enum_type(self, type_name, values):
+        try:
+            if not values:
+                return False, "Список значений пуст"
+            escaped = ", ".join([self.cursor.mogrify("%s", (v,)).decode("utf-8") for v in values])
+            q = f"CREATE TYPE {sql.Identifier(type_name).as_string(self.cursor)} AS ENUM ({escaped})"
+            self.cursor.execute(q)
+            self.connection.commit()
+            self.logger.info(f"Создан ENUM тип {type_name}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
+
+    def add_enum_value(self, type_name, new_value, position=None, ref_value=None):
+        """
+        position: None | 'BEFORE' | 'AFTER'
+        ref_value: строка опорного значения для BEFORE/AFTER
+        """
+        try:
+            base = f"ALTER TYPE {sql.Identifier(type_name).as_string(self.cursor)} ADD VALUE "
+            if position in ("BEFORE", "AFTER") and ref_value:
+                q = base + f"%s {position} %s"
+                self.cursor.execute(q, (new_value, ref_value))
+            else:
+                q = base + "%s"
+                self.cursor.execute(q, (new_value,))
+            self.connection.commit()
+            self.logger.info(f"В ENUM {type_name} добавлено значение {new_value}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
+
+    def rename_enum_value(self, type_name, old_value, new_value):
+        try:
+            q = f"ALTER TYPE {sql.Identifier(type_name).as_string(self.cursor)} RENAME VALUE %s TO %s"
+            self.cursor.execute(q, (old_value, new_value))
+            self.connection.commit()
+            self.logger.info(f"ENUM {type_name}: {old_value} -> {new_value}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
+
+    def drop_type(self, type_name):
+        try:
+            q = f"DROP TYPE IF EXISTS {sql.Identifier(type_name).as_string(self.cursor)} CASCADE"
+            self.cursor.execute(q)
+            self.connection.commit()
+            self.logger.info(f"Удалён тип {type_name}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
+
+    # ---------- COMPOSITE ----------
+    def list_composite_types(self):
+        try:
+            self.cursor.execute("""
+                SELECT t.typname
+                FROM pg_type t
+                WHERE t.typtype = 'c'
+                  AND t.typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
+                  AND NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.reltype = t.oid)
+                ORDER BY t.typname
+            """)
+            return [r[0] for r in self.cursor.fetchall()]
+        except psycopg2.Error as e:
+            self.logger.error(f"Ошибка получения составных типов: {str(e)}")
+            self.connection.rollback()
+            return []
+
+    def list_composite_attributes(self, type_name):
+        try:
+            self.cursor.execute("""
+                SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod)
+                FROM pg_type t
+                JOIN pg_class c ON c.oid = t.typrelid
+                JOIN pg_attribute a ON a.attrelid = c.oid
+                WHERE t.typname = %s AND a.attnum > 0 AND NOT a.attisdropped
+                ORDER BY a.attnum
+            """, (type_name,))
+            return [(r[0], r[1]) for r in self.cursor.fetchall()]
+        except psycopg2.Error as e:
+            self.logger.error(f"Ошибка получения атрибутов составного типа {type_name}: {str(e)}")
+            self.connection.rollback()
+            return []
+
+    def create_composite_type(self, type_name, columns):
+        try:
+            if not columns:
+                return False, "Нет столбцов"
+            col_defs = []
+            for cname, ctype in columns:
+                col_defs.append(f"{sql.Identifier(cname).as_string(self.cursor)} {ctype}")
+            q = f"CREATE TYPE {sql.Identifier(type_name).as_string(self.cursor)} AS ({', '.join(col_defs)})"
+            self.cursor.execute(q)
+            self.connection.commit()
+            self.logger.info(f"Создан составной тип {type_name}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
+
+    def composite_add_attribute(self, type_name, attr_name, data_type):
+        try:
+            q = (
+                f"ALTER TYPE {sql.Identifier(type_name).as_string(self.cursor)} "
+                f"ADD ATTRIBUTE {sql.Identifier(attr_name).as_string(self.cursor)} {data_type}"
+            )
+            self.cursor.execute(q)
+            self.connection.commit()
+            self.logger.info(f"{type_name}: добавлен атрибут {attr_name} {data_type}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
+
+    def composite_drop_attribute(self, type_name, attr_name):
+        try:
+            q = (
+                f"ALTER TYPE {sql.Identifier(type_name).as_string(self.cursor)} "
+                f"DROP ATTRIBUTE {sql.Identifier(attr_name).as_string(self.cursor)}"
+            )
+            self.cursor.execute(q)
+            self.connection.commit()
+            self.logger.info(f"{type_name}: удалён атрибут {attr_name}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
+
+    def composite_rename_attribute(self, type_name, old_name, new_name):
+        try:
+            q = (
+                f"ALTER TYPE {sql.Identifier(type_name).as_string(self.cursor)} "
+                f"RENAME ATTRIBUTE {sql.Identifier(old_name).as_string(self.cursor)} "
+                f"TO {sql.Identifier(new_name).as_string(self.cursor)}"
+            )
+            self.cursor.execute(q)
+            self.connection.commit()
+            self.logger.info(f"{type_name}: переименован атрибут {old_name} -> {new_name}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
+
+    def composite_alter_attribute_type(self, type_name, attr_name, new_type):
+        try:
+            q = (
+                f"ALTER TYPE {sql.Identifier(type_name).as_string(self.cursor)} "
+                f"ALTER ATTRIBUTE {sql.Identifier(attr_name).as_string(self.cursor)} "
+                f"TYPE {new_type}"
+            )
+            self.cursor.execute(q)
+            self.connection.commit()
+            self.logger.info(f"{type_name}: изменён тип атрибута {attr_name} -> {new_type}")
+            return True, ""
+        except psycopg2.Error as e:
+            self.connection.rollback()
+            return False, str(e)
